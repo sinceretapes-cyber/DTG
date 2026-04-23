@@ -464,12 +464,28 @@ var bool locked_12h = false
 var bool locked_D   = false
 var bool locked_W   = false
 
-bool newZone_4h  = ta.change(zt_4h)  != 0 or ta.change(zb_4h)  != 0
-bool newZone_6h  = ta.change(zt_6h)  != 0 or ta.change(zb_6h)  != 0
-bool newZone_8h  = ta.change(zt_8h)  != 0 or ta.change(zb_8h)  != 0
-bool newZone_12h = ta.change(zt_12h) != 0 or ta.change(zb_12h) != 0
-bool newZone_D   = ta.change(zt_Db)  != 0 or ta.change(zb_Db)  != 0
-bool newZone_W   = ta.change(zt_Wb)  != 0 or ta.change(zb_Wb)  != 0
+// Pre-compute every ta.change() unconditionally so each one evaluates on every bar.
+// Inlining them into an `or` expression lets Pine short-circuit and skip calls,
+// which breaks the series-history guarantee ta.change() relies on.
+float chg_zt_4h  = ta.change(zt_4h)
+float chg_zb_4h  = ta.change(zb_4h)
+float chg_zt_6h  = ta.change(zt_6h)
+float chg_zb_6h  = ta.change(zb_6h)
+float chg_zt_8h  = ta.change(zt_8h)
+float chg_zb_8h  = ta.change(zb_8h)
+float chg_zt_12h = ta.change(zt_12h)
+float chg_zb_12h = ta.change(zb_12h)
+float chg_zt_D   = ta.change(zt_Db)
+float chg_zb_D   = ta.change(zb_Db)
+float chg_zt_W   = ta.change(zt_Wb)
+float chg_zb_W   = ta.change(zb_Wb)
+
+bool newZone_4h  = chg_zt_4h  != 0 or chg_zb_4h  != 0
+bool newZone_6h  = chg_zt_6h  != 0 or chg_zb_6h  != 0
+bool newZone_8h  = chg_zt_8h  != 0 or chg_zb_8h  != 0
+bool newZone_12h = chg_zt_12h != 0 or chg_zb_12h != 0
+bool newZone_D   = chg_zt_D   != 0 or chg_zb_D   != 0
+bool newZone_W   = chg_zt_W   != 0 or chg_zb_W   != 0
 
 if newZone_4h
     locked_4h := false
