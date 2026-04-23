@@ -16,7 +16,10 @@ indicator("DTG V8.1", overlay=true, max_labels_count=500, max_lines_count=500, m
 grpSig        = "Signals"
 showLabel     = input.string("Buy / Sell", "Signal Style", options=["Buy / Sell", "Symbol", "Off"], inline="S1", group=grpSig)
 showMax       = input.int(1, "Signals on Chart", minval=1, maxval=500, inline="S1", group=grpSig)
-enableEM1     = input.bool(true, "EM1 — Pattern Entry", group=grpSig, tooltip="Original 3-candle pattern signal")
+enableEM1     = input.bool(true, "EM1 — 3-Candle Reversal", group=grpSig, tooltip="Original 3-candle reversal pattern")
+enableEM2     = input.bool(true, "EM2 — Engulfing",           group=grpSig, tooltip="Bullish/bearish engulfing candle")
+enableEM3     = input.bool(true, "EM3 — Inside-Bar Break",    group=grpSig, tooltip="Inside-bar consolidation broken in bias direction")
+enableEM4     = input.bool(true, "EM4 — Pin Bar / Rejection", group=grpSig, tooltip="Rejection wick candle (body in far end of range, long wick the other side)")
 buy_c         = input.color(color.new(#056656, 0), "Buy",  inline="S2", group=grpSig)
 sell_c        = input.color(color.new(#b22833, 0), "Sell", inline="S2", group=grpSig)
 txt_c         = input.color(color.new(color.white, 0), "Text", inline="S2", group=grpSig)
@@ -51,6 +54,18 @@ excludeNonTW    = input.bool(true, "Signals During Window Only", group=grpSystem
 windowTapsOnly  = input.bool(true, "Zone Taps During Window Only", group=grpSystem, tooltip="Step 2 zone touch only counts during the trading window. Off = taps count any time.")
 oneTradePerDay  = input.bool(true, "One Trade Per Day", group=grpSystem, tooltip="After a winning trade (TP2 hit), no more signals for the day. SL/BE trades allow retries.")
 requireZoneTap  = input.bool(true, "Require Zone Tap for Signal", group=grpSystem, tooltip="Enforce Step 2: signals only fire after a discount zone has been tapped. Turn off to allow signals without a zone tap.")
+
+// ── CONFLUENCE ──
+grpConf        = "Zone Confluence"
+minZoneConf    = input.int(2, "Min Zone Confluence", minval=1, maxval=20, group=grpConf, tooltip="Minimum pattern fires accumulated in a zone before a signal can trigger from that zone. Counts only fires while price is touching the zone.")
+showZoneScore  = input.bool(true, "Show Zone Score on Chart", group=grpConf, tooltip="Appends the per-zone pattern tally to the zone label (e.g. 4H Discount · Σ3).")
+
+// ── EM4 PIN BAR THRESHOLDS (from DTG Rejection Wicks) ──
+grpEM4         = "EM4 — Pin Bar Thresholds"
+em4_bodyPct    = input.float(33.0, "Body Position %", minval=5, maxval=50, step=1, group=grpEM4, tooltip="Body must close within this % of candle range from the rejection end. Lower = stricter.")
+em4_wickRatio  = input.float(1.5,  "Min Wick:Body Ratio", minval=1.0, step=0.1, group=grpEM4, tooltip="Rejection wick must be at least this many times the body size.")
+em4_atrLen     = input.int(14, "ATR Length", minval=1, group=grpEM4)
+em4_minAtrPct  = input.float(40.0, "Min Candle Size (% of ATR)", minval=0, step=5, group=grpEM4, tooltip="Candle range must be at least this % of ATR. 0 = disabled.")
 
 // ── STATISTICS ──
 grpStats     = "Statistics"
@@ -183,9 +198,25 @@ type TradeRecord
     string model        = na
     string zoneTF       = na
 
+// ── Per-zone pattern confluence counters ──
+// Accumulated ONLY while price is actively touching the zone (low ≤ zoneTop AND
+// high ≥ zoneBottom). Reset on zone rollover or invalidation. Weekly is not
+// tracked (signal-ineligible per system rules + saves state/compute).
+type ZoneConfluence
+    int em1   = 0
+    int em2   = 0
+    int em3   = 0
+    int em4   = 0
+    int total = 0
+
 var TradeState    trade = TradeState.new()
 var ZoneSnapshot  zone  = ZoneSnapshot.new()
 var BgTrade       bg    = BgTrade.new()
+var ZoneConfluence conf_4h  = ZoneConfluence.new()
+var ZoneConfluence conf_6h  = ZoneConfluence.new()
+var ZoneConfluence conf_8h  = ZoneConfluence.new()
+var ZoneConfluence conf_12h = ZoneConfluence.new()
+var ZoneConfluence conf_D   = ZoneConfluence.new()
 
 // ── Trade history array — ring buffer, oldest trimmed once `statsMax` reached ──
 var array<TradeRecord> trades = array.new<TradeRecord>()
@@ -309,135 +340,72 @@ float  fxRate  = acctCurrency == "AUD" ? nz(fxClose, 0.65) : acctCurrency == "EU
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §9  BUY / SELL CONDITIONS (EM1 — with bias direction filter)
+// §9  PATTERN DETECTION — EM1 / EM2 / EM3 / EM4 (all on chart TF)
 // ─────────────────────────────────────────────────────────────────────────────
+// Each model fires independently. Detection runs every bar (cheap arithmetic).
+// The zone-touch gate and confluence threshold happen in §10 — detection here
+// is pure pattern recognition with no bias/zone/system awareness.
 
-buyC1  = close[3] < open[3]
-buyC2  = close[2] > open[2]
-buyC3  = close[1] > open[1]
-buyC4a = high[1] > high[2]
-buyC4b = low[1] > low[2]
-buySignal := buyC1 and buyC2 and buyC3 and buyC4a and buyC4b and (pct_change > 0.006) and (excludeNonTW ? mergedTW : true) and assetsFilter and intradayTF and (buLTF_XAU_XAG ? mult >= 0 : true) and overallBias == 1
+// ── Common filters shared by all models ──
+bool filt_common_buy  = (excludeNonTW ? mergedTW : true) and assetsFilter and intradayTF and (buLTF_XAU_XAG ? mult >= 0 : true) and overallBias == 1
+bool filt_common_sell = (excludeNonTW ? mergedTW : true) and assetsFilter and intradayTF and (beLTF_XAU_XAG ? mult <= 0 : true) and overallBias == -1
 
-sellC1  = close[3] > open[3]
-sellC2  = close[2] < open[2]
-sellC3  = close[1] < open[1]
-sellC4a = low[1] < low[2]
-sellC4b = high[1] < high[2]
-sellSignal := sellC1 and sellC2 and sellC3 and sellC4a and sellC4b and (pct_change < -0.006) and (excludeNonTW ? mergedTW : true) and assetsFilter and intradayTF and (beLTF_XAU_XAG ? mult <= 0 : true) and overallBias == -1
+// ── EM1 — original 3-candle reversal ──
+// Buy: bearish [3] → bullish [2] → bullish [1] with HH+HL
+bool em1_buy_raw  = close[3] < open[3] and close[2] > open[2] and close[1] > open[1] and high[1] > high[2] and low[1] > low[2] and pct_change > 0.006
+bool em1_sell_raw = close[3] > open[3] and close[2] < open[2] and close[1] < open[1] and low[1]  < low[2]  and high[1] < high[2] and pct_change < -0.006
+bool em1_buy  = em1_buy_raw  and filt_common_buy
+bool em1_sell = em1_sell_raw and filt_common_sell
 
+// ── EM2 — engulfing ──
+// Buy: bearish [2] fully engulfed by bullish [1]. Body of [1] ≥ body of [2].
+bool em2_buy_raw  = close[2] < open[2] and close[1] > open[1] and close[1] > open[2] and open[1] < close[2] and (close[1] - open[1]) >= (open[2] - close[2])
+bool em2_sell_raw = close[2] > open[2] and close[1] < open[1] and close[1] < open[2] and open[1] > close[2] and (open[1] - close[1]) >= (close[2] - open[2])
+bool em2_buy  = em2_buy_raw  and filt_common_buy
+bool em2_sell = em2_sell_raw and filt_common_sell
 
-// ─────────────────────────────────────────────────────────────────────────────
-// §10  SIGNAL LABELS & TRADE ENTRY
-// ─────────────────────────────────────────────────────────────────────────────
+// ── EM3 — inside-bar break ──
+// Setup: [2] is inside bar of [3] (high[2]≤high[3] AND low[2]≥low[3]).
+// Break: [1] closes beyond [2] in bias direction. SL is mother-bar low/high.
+bool em3_isInside = high[2] <= high[3] and low[2] >= low[3]
+bool em3_buy_raw  = em3_isInside and close[1] > high[2] and close[1] > open[1]
+bool em3_sell_raw = em3_isInside and close[1] < low[2]  and close[1] < open[1]
+bool em3_buy  = em3_buy_raw  and filt_common_buy
+bool em3_sell = em3_sell_raw and filt_common_sell
 
-var DTG_Signal = array.new_label()
-label_size = showLabel == "Symbol" ? size.auto : size.tiny
-buy_style  = showLabel == "Symbol" ? label.style_triangleup   : label.style_label_up
-sell_style = showLabel == "Symbol" ? label.style_triangledown : label.style_label_down
-em1_text   = showLabel == "Symbol" ? "" : "EM1"
+// ── EM4 — pin bar / rejection wick (user's DTG Rejection Wicks logic, inlined) ──
+// Uses close[1]/open[1]/high[1]/low[1] — detects on the most recently closed candle.
+float em4_range     = high[1] - low[1]
+float em4_bodyLow   = math.min(close[1], open[1])
+float em4_bodyHigh  = math.max(close[1], open[1])
+float em4_bodySize  = em4_bodyHigh - em4_bodyLow
+float em4_upperWick = high[1] - em4_bodyHigh
+float em4_lowerWick = em4_bodyLow - low[1]
+float em4_atrVal    = ta.atr(em4_atrLen)
+float em4_threshold = em4_bodyPct * 0.01
+float em4_atrFactor = em4_minAtrPct * 0.01
+bool  em4_valid     = em4_range > 0
+bool  em4_passesAtr = em4_minAtrPct == 0 or em4_range >= em4_atrVal * em4_atrFactor
+// Bullish rejection (algebra identical to DTG Rejection Wicks, division removed):
+// Original: (1 - (bodyLow - low)/range) <= threshold  ⇔  (high - bodyLow) <= threshold*range
+bool em4_buy_raw  = em4_valid and em4_passesAtr and (high[1] - em4_bodyLow) <= em4_threshold * em4_range and (em4_bodySize > 0 ? em4_lowerWick / em4_bodySize >= em4_wickRatio : em4_lowerWick > em4_upperWick)
+bool em4_sell_raw = em4_valid and em4_passesAtr and (em4_bodyHigh - low[1]) <= em4_threshold * em4_range and (em4_bodySize > 0 ? em4_upperWick / em4_bodySize >= em4_wickRatio : em4_upperWick > em4_lowerWick)
+bool em4_buy  = em4_buy_raw  and filt_common_buy
+bool em4_sell = em4_sell_raw and filt_common_sell
 
-// ── 3-STEP SYSTEM GATE (EM1) ──
-// Weekly discount zone is deliberately excluded from signal eligibility.
-// The weekly zone still draws and tracks touches, but a weekly-only tap
-// cannot satisfy Step 2 — signals must come from 4H/6H/8H/12H/Daily.
-bool em1_hasTouchedZones = dashStk_4h or dashStk_6h or dashStk_8h or dashStk_12h or dashStk_D
-bool em1_stepTwoValid = requireZoneTap ? (stepTwoMet and stepTwoBias == overallBias and overallBias != 0 and em1_hasTouchedZones) : (overallBias != 0)
-bool em1_systemReady  = em1_stepTwoValid and (not oneTradePerDay or not dailyProfitTaken)
-bool em1_allowed      = trade.status != "Triggered" and em1_systemReady
+// ── Aggregate: did ANY pattern fire on this bar (direction-aware)? ──
+// Used only for zone-tap confluence counting. Actual signal selection uses per-model flags.
+bool anyPatternBuy  = (enableEM1 and em1_buy)  or (enableEM2 and em2_buy)  or (enableEM3 and em3_buy)  or (enableEM4 and em4_buy)
+bool anyPatternSell = (enableEM1 and em1_sell) or (enableEM2 and em2_sell) or (enableEM3 and em3_sell) or (enableEM4 and em4_sell)
 
-bool validBuy  = buySignal and enableEM1 and em1_allowed and showLabel != "Off"
-bool validSell = sellSignal and enableEM1 and em1_allowed and showLabel != "Off"
-
-// Raw pattern signals (no system gate) — for alertcondition
-bool rawBuy  = buySignal and enableEM1 and trade.status != "Triggered" and overallBias == 1
-bool rawSell = sellSignal and enableEM1 and trade.status != "Triggered" and overallBias == -1
-
-if validBuy
-    trade.bar        := bar_index
-    trade.triggerBar := na
-    trade.time       := time
-    trade.status     := "Active"
-    trade.entry      := math.round(high[1] + inputSpread * spread_tick, digits)
-    trade.sl         := math.round(low[1] - 3 * spread_tick, digits)
-    trade.tp1        := math.round(2 * trade.entry - trade.sl, digits)
-    trade.tp2        := math.round(3 * trade.entry - 2 * trade.sl, digits)
-    trade.bias       := buy_c
-    trade.model      := "EM1"
-    trade.tp1hit     := false
-    f_DTG_algo(DTG_Signal, bar_index, low, yloc.belowbar, buy_c, buy_style, em1_text, txt_c, label_size)
-    alert("EM1 buy setup on the " + TF_txt + " Consult data table before proceeding.", alert.freq_once_per_bar)
-
-if validSell
-    trade.bar        := bar_index
-    trade.triggerBar := na
-    trade.time       := time
-    trade.status     := "Active"
-    trade.entry      := math.round(low[1] - inputSpread * spread_tick, digits)
-    trade.sl         := math.round(high[1] + 3 * spread_tick, digits)
-    trade.tp1        := math.round(2 * trade.entry - trade.sl, digits)
-    trade.tp2        := math.round(3 * trade.entry - 2 * trade.sl, digits)
-    trade.bias       := sell_c
-    trade.model      := "EM1"
-    trade.tp1hit     := false
-    f_DTG_algo(DTG_Signal, bar_index, high, yloc.abovebar, sell_c, sell_style, em1_text, txt_c, label_size)
-    alert("EM1 sell setup on the " + TF_txt + " Consult data table before proceeding.", alert.freq_once_per_bar)
-
-f_LABEL_truncate(DTG_Signal, showMax)
-
-alertcondition(validBuy or validSell,  title="System Signal",  message="DTG V8: Valid SYSTEM signal. Check dashboard for trade details.")
-alertcondition(rawBuy or rawSell,      title="Pattern Signal", message="DTG V8: EM1 pattern detected (system rules not applied).")
+// Legacy aggregates kept so the rest of §10 (validBuy/validSell/rawBuy/rawSell gates) reads naturally.
+buySignal  := anyPatternBuy
+sellSignal := anyPatternSell
 
 
-// ─────────────────────────────────────────────────────────────────────────────
-// §12  TRADE STATUS MACHINE
-// ─────────────────────────────────────────────────────────────────────────────
-
-if trade.status == "Active" and (bar_index - nz(trade.bar)) == 0
-    if trade.bias == sell_c and low < trade.entry
-        trade.status     := "Triggered"
-        trade.triggerBar := bar_index
-    else if trade.bias == buy_c and high > trade.entry
-        trade.status     := "Triggered"
-        trade.triggerBar := bar_index
-    else
-        trade.status := "Active"
-
-if trade.status == "Active" and (bar_index - nz(trade.bar)) == 1
-    trade.status := "Invalid"
-
-if trade.status == "Invalid"
-    if bar_index - nz(trade.bar) > 1
-        trade.status := "Scanning"
-
-// Triggered = live trade. Only exits on TP2, SL, or BE (entry) hit.
-// V8.1 FIX #1: wasTP1hit snapshot prevents same-bar TP1+BE race.
-// V8.1 FIX #2: gate with bar_index > trade.triggerBar — skip the trigger bar
-//              so a pre-trigger wick through SL isn't counted as a loss.
-if trade.status == "Triggered" and bar_index > nz(trade.triggerBar)
-    bool wasTP1hit = trade.tp1hit
-    bool checkTP1  = (trade.bias == buy_c and high > trade.tp1) or (trade.bias == sell_c and low < trade.tp1)
-    if checkTP1
-        trade.tp1hit := true
-    bool hitTP2 = (trade.bias == sell_c and low < trade.tp2) or (trade.bias == buy_c and high > trade.tp2)
-    bool hitSL  = not wasTP1hit and ((trade.bias == sell_c and high > trade.sl) or (trade.bias == buy_c and low < trade.sl))
-    bool hitBE  = wasTP1hit and ((trade.bias == buy_c and low < trade.entry) or (trade.bias == sell_c and high > trade.entry))
-    if hitTP2 or hitBE or hitSL
-        if hitTP2
-            dailyProfitTaken := true
-        int   outcomeCode = hitTP2 ? 1 : hitBE ? 0 : -1
-        float rMult       = outcomeCode == 1 ? 2.0 : outcomeCode == 0 ? 1.0 : -1.0
-        TradeRecord rec = TradeRecord.new(bar=trade.bar, exitBar=bar_index, time=trade.time, exitTime=time, entry=trade.entry, sl=trade.sl, tp1=trade.tp1, tp2=trade.tp2, dir=trade.bias == buy_c ? 1 : -1, outcome=outcomeCode, rMultiple=rMult, model=trade.model, zoneTF=trade.zoneTF)
-        array.push(trades, rec)
-        if array.size(trades) > statsMax
-            array.shift(trades)
-        trade.status := "Scanning"
-        trade.tp1hit := false
-
-if na(trade.status)
-    trade.status := "None"
-
-noSignal_Bias = (trade.status == "Scanning" or trade.status == "None") ? H4_c : trade.bias
+// (§10 SIGNAL LABELS & TRADE ENTRY and §12 TRADE STATUS MACHINE have been
+// relocated to run AFTER §13 so the per-zone confluence counters are
+// up-to-date on the signal bar. See below after §13.)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -522,40 +490,55 @@ bool newZone_12h = chg_zt_12h != 0 or chg_zb_12h != 0
 bool newZone_D   = chg_zt_D   != 0 or chg_zb_D   != 0
 bool newZone_W   = chg_zt_W   != 0 or chg_zb_W   != 0
 
+// Zone rollover — clear lock, sticky touch, AND confluence counters.
+// Confluence reset: a brand-new HTF candle makes all previous pattern fires
+// irrelevant (new zone, new context, start counting fresh).
 if newZone_4h
     locked_4h := false
     dashStk_4h := false
+    conf_4h.em1 := 0, conf_4h.em2 := 0, conf_4h.em3 := 0, conf_4h.em4 := 0, conf_4h.total := 0
 if newZone_6h
     locked_6h := false
     dashStk_6h := false
+    conf_6h.em1 := 0, conf_6h.em2 := 0, conf_6h.em3 := 0, conf_6h.em4 := 0, conf_6h.total := 0
 if newZone_8h
     locked_8h := false
     dashStk_8h := false
+    conf_8h.em1 := 0, conf_8h.em2 := 0, conf_8h.em3 := 0, conf_8h.em4 := 0, conf_8h.total := 0
 if newZone_12h
     locked_12h := false
     dashStk_12h := false
+    conf_12h.em1 := 0, conf_12h.em2 := 0, conf_12h.em3 := 0, conf_12h.em4 := 0, conf_12h.total := 0
 if newZone_D
     locked_D := false
     dashStk_D := false
+    conf_D.em1  := 0, conf_D.em2  := 0, conf_D.em3  := 0, conf_D.em4  := 0, conf_D.total  := 0
 if newZone_W
     locked_W := false
     dashStk_W := false
 
+// Zone invalidation — clear lock, sticky touch, AND confluence counters.
+// Invalidated history is no longer useful evidence for future setups.
 if f_zoneInvalid(zt_4h, zb_4h, bias_4h)
     locked_4h := true
     dashStk_4h := false
+    conf_4h.em1 := 0, conf_4h.em2 := 0, conf_4h.em3 := 0, conf_4h.em4 := 0, conf_4h.total := 0
 if f_zoneInvalid(zt_6h, zb_6h, bias_6h)
     locked_6h := true
     dashStk_6h := false
+    conf_6h.em1 := 0, conf_6h.em2 := 0, conf_6h.em3 := 0, conf_6h.em4 := 0, conf_6h.total := 0
 if f_zoneInvalid(zt_8h, zb_8h, bias_8h)
     locked_8h := true
     dashStk_8h := false
+    conf_8h.em1 := 0, conf_8h.em2 := 0, conf_8h.em3 := 0, conf_8h.em4 := 0, conf_8h.total := 0
 if f_zoneInvalid(zt_12h, zb_12h, bias_12h)
     locked_12h := true
     dashStk_12h := false
+    conf_12h.em1 := 0, conf_12h.em2 := 0, conf_12h.em3 := 0, conf_12h.em4 := 0, conf_12h.total := 0
 if f_zoneInvalid(zt_Db, zb_Db, bias_D)
     locked_D := true
     dashStk_D := false
+    conf_D.em1  := 0, conf_D.em2  := 0, conf_D.em3  := 0, conf_D.em4  := 0, conf_D.total  := 0
 if f_zoneInvalid(zt_Wb, zb_Wb, bias_W)
     locked_W := true
     dashStk_W := false
@@ -583,6 +566,99 @@ bool touch_D   = m_D   and f_touching(zt_Db,  zb_Db)
 bool touch_W   = m_W   and f_touching(zt_Wb,  zb_Wb)
 
 int touchCount = (touch_4h ? 1 : 0) + (touch_6h ? 1 : 0) + (touch_8h ? 1 : 0) + (touch_12h ? 1 : 0) + (touch_D ? 1 : 0) + (touch_W ? 1 : 0)
+
+// ── CONFLUENCE COUNTING ──
+// Increment a zone's pattern counters ONLY when:
+//   1. The PATTERN'S confirmation candle (bar [1]) physically touched that zone
+//   2. A pattern fired on this bar (confirmed via §9 detection at bar close)
+//   3. Zone is bias-aligned and not locked (m_* handles this)
+// We check bar [1] touch — not current bar — because every pattern (EM1-4) is
+// confirmed on bar [1], and price may have rejected fully out of the zone by
+// the current bar (common for strong pin bar / engulfing rejections).
+// Weekly deliberately omitted — signal-ineligible per system rules.
+// Overlap note: a single bar can increment multiple counters (e.g. an engulfing
+// pin bar bumps both em2 and em4). Each model is scored separately —
+// intentional: two patterns agreeing = stronger evidence than one.
+bool patFire_em1 = enableEM1 and (em1_buy or em1_sell)
+bool patFire_em2 = enableEM2 and (em2_buy or em2_sell)
+bool patFire_em3 = enableEM3 and (em3_buy or em3_sell)
+bool patFire_em4 = enableEM4 and (em4_buy or em4_sell)
+
+f_patternBarTouched(float zt, float zb) =>
+    not na(zt) and not na(zb) and low[1] <= math.max(zt, zb) and high[1] >= math.min(zt, zb)
+
+bool patTouch_4h  = m_4h  and f_patternBarTouched(zt_4h,  zb_4h)
+bool patTouch_6h  = m_6h  and f_patternBarTouched(zt_6h,  zb_6h)
+bool patTouch_8h  = m_8h  and f_patternBarTouched(zt_8h,  zb_8h)
+bool patTouch_12h = m_12h and f_patternBarTouched(zt_12h, zb_12h)
+bool patTouch_D   = m_D   and f_patternBarTouched(zt_Db,  zb_Db)
+
+if patTouch_4h
+    if patFire_em1
+        conf_4h.em1 := conf_4h.em1 + 1
+        conf_4h.total := conf_4h.total + 1
+    if patFire_em2
+        conf_4h.em2 := conf_4h.em2 + 1
+        conf_4h.total := conf_4h.total + 1
+    if patFire_em3
+        conf_4h.em3 := conf_4h.em3 + 1
+        conf_4h.total := conf_4h.total + 1
+    if patFire_em4
+        conf_4h.em4 := conf_4h.em4 + 1
+        conf_4h.total := conf_4h.total + 1
+if patTouch_6h
+    if patFire_em1
+        conf_6h.em1 := conf_6h.em1 + 1
+        conf_6h.total := conf_6h.total + 1
+    if patFire_em2
+        conf_6h.em2 := conf_6h.em2 + 1
+        conf_6h.total := conf_6h.total + 1
+    if patFire_em3
+        conf_6h.em3 := conf_6h.em3 + 1
+        conf_6h.total := conf_6h.total + 1
+    if patFire_em4
+        conf_6h.em4 := conf_6h.em4 + 1
+        conf_6h.total := conf_6h.total + 1
+if patTouch_8h
+    if patFire_em1
+        conf_8h.em1 := conf_8h.em1 + 1
+        conf_8h.total := conf_8h.total + 1
+    if patFire_em2
+        conf_8h.em2 := conf_8h.em2 + 1
+        conf_8h.total := conf_8h.total + 1
+    if patFire_em3
+        conf_8h.em3 := conf_8h.em3 + 1
+        conf_8h.total := conf_8h.total + 1
+    if patFire_em4
+        conf_8h.em4 := conf_8h.em4 + 1
+        conf_8h.total := conf_8h.total + 1
+if patTouch_12h
+    if patFire_em1
+        conf_12h.em1 := conf_12h.em1 + 1
+        conf_12h.total := conf_12h.total + 1
+    if patFire_em2
+        conf_12h.em2 := conf_12h.em2 + 1
+        conf_12h.total := conf_12h.total + 1
+    if patFire_em3
+        conf_12h.em3 := conf_12h.em3 + 1
+        conf_12h.total := conf_12h.total + 1
+    if patFire_em4
+        conf_12h.em4 := conf_12h.em4 + 1
+        conf_12h.total := conf_12h.total + 1
+if patTouch_D
+    if patFire_em1
+        conf_D.em1 := conf_D.em1 + 1
+        conf_D.total := conf_D.total + 1
+    if patFire_em2
+        conf_D.em2 := conf_D.em2 + 1
+        conf_D.total := conf_D.total + 1
+    if patFire_em3
+        conf_D.em3 := conf_D.em3 + 1
+        conf_D.total := conf_D.total + 1
+    if patFire_em4
+        conf_D.em4 := conf_D.em4 + 1
+        conf_D.total := conf_D.total + 1
+
 
 // ── STICKY TOUCH FLAGS (dashboard) ──
 if touch_4h
@@ -667,9 +743,204 @@ if barstate.islast and autoDiscount
     line.delete(autoMid)
     if activeZone != 0 and not na(activeZT) and not na(activeZB) and not na(activeOpenTime) and not tradeFrozen
         autoBox := box.new(activeOpenTime, activeZT, activeCloseTime, activeZB, xloc=xloc.bar_time, border_color=autoZoneBorder, bgcolor=autoZoneClr, border_width=1, border_style=line.style_dashed)
-        autoLbl := label.new(activeCloseTime, math.avg(activeZT, activeZB), activeZoneStr + " Discount", xloc=xloc.bar_time, color=color.new(color.black, 100), textcolor=autoZoneBorder, style=label.style_label_left, size=size.small)
+        // Zone label includes confluence score when enabled — e.g. "4H Discount · Σ3"
+        int liveConfTotal = activeZone == 1 ? conf_4h.total : activeZone == 2 ? conf_6h.total : activeZone == 3 ? conf_8h.total : activeZone == 4 ? conf_12h.total : activeZone == 5 ? conf_D.total : 0
+        string activeScoreTxt = showZoneScore and liveConfTotal > 0 ? " · Σ" + str.tostring(liveConfTotal) : ""
+        autoLbl := label.new(activeCloseTime, math.avg(activeZT, activeZB), activeZoneStr + " Discount" + activeScoreTxt, xloc=xloc.bar_time, color=color.new(color.black, 100), textcolor=autoZoneBorder, style=label.style_label_left, size=size.small)
         float midPrice = math.avg(activeZT, activeZB)
         autoMid := line.new(activeOpenTime, midPrice, activeCloseTime, midPrice, xloc=xloc.bar_time, color=autoMidClr, width=2, style=line.style_solid)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §10  SIGNAL LABELS & TRADE ENTRY  (relocated — runs after §13 so per-zone
+//       confluence counters include THIS bar's pattern fire)
+// ─────────────────────────────────────────────────────────────────────────────
+
+var DTG_Signal = array.new_label()
+label_size = showLabel == "Symbol" ? size.auto : size.tiny
+buy_style  = showLabel == "Symbol" ? label.style_triangleup   : label.style_label_up
+sell_style = showLabel == "Symbol" ? label.style_triangledown : label.style_label_down
+
+// ── 3-STEP SYSTEM GATE ──
+// Step 1 (bias)    — overallBias != 0
+// Step 2 (zone tap) — stepTwoMet AND current tapped zone still present
+// Step 3 (pattern) — any enabled EM fires this bar
+// Plus: the tapped zone's confluence must be ≥ minZoneConf.
+// Weekly zones are excluded from every one of these (handled at sticky-flag level).
+bool em_hasTouchedZones = dashStk_4h or dashStk_6h or dashStk_8h or dashStk_12h or dashStk_D
+bool em_stepTwoValid    = requireZoneTap ? (stepTwoMet and stepTwoBias == overallBias and overallBias != 0 and em_hasTouchedZones) : (overallBias != 0)
+bool em_systemReady     = em_stepTwoValid and (not oneTradePerDay or not dailyProfitTaken)
+bool em_allowed         = trade.status != "Triggered" and em_systemReady
+
+// ── CONFLUENCE CHECK ──
+// Use the active zone's confluence counter (weekly returns na → treated as 0).
+int activeConfTotal = activeZone == 1 ? conf_4h.total : activeZone == 2 ? conf_6h.total : activeZone == 3 ? conf_8h.total : activeZone == 4 ? conf_12h.total : activeZone == 5 ? conf_D.total : 0
+bool confluenceMet  = activeConfTotal >= minZoneConf
+
+// ── PER-MODEL FINAL FLAGS ──
+// Each model passes the system gate + confluence + its own enable toggle.
+bool fire_em1_buy  = enableEM1 and em1_buy  and em_allowed and confluenceMet and showLabel != "Off"
+bool fire_em1_sell = enableEM1 and em1_sell and em_allowed and confluenceMet and showLabel != "Off"
+bool fire_em2_buy  = enableEM2 and em2_buy  and em_allowed and confluenceMet and showLabel != "Off"
+bool fire_em2_sell = enableEM2 and em2_sell and em_allowed and confluenceMet and showLabel != "Off"
+bool fire_em3_buy  = enableEM3 and em3_buy  and em_allowed and confluenceMet and showLabel != "Off"
+bool fire_em3_sell = enableEM3 and em3_sell and em_allowed and confluenceMet and showLabel != "Off"
+bool fire_em4_buy  = enableEM4 and em4_buy  and em_allowed and confluenceMet and showLabel != "Off"
+bool fire_em4_sell = enableEM4 and em4_sell and em_allowed and confluenceMet and showLabel != "Off"
+
+// ── Tiebreaker: tightest SL wins (best R:R) ──
+// Each model defines its own entry/SL based on its pattern anatomy.
+// When multiple fire on the same bar, the one with the smallest |entry−SL|
+// pays the user the best R:R. Deterministic, doesn't need extra inputs.
+// Entries/SL formulas (all rounded to syminfo.mintick downstream):
+//   EM1/EM2 buy  — entry = high[1] + spread, SL = low[1]  − 3·spread
+//   EM1/EM2 sell — entry = low[1]  − spread, SL = high[1] + 3·spread
+//   EM3 buy      — entry = high[1] + spread, SL = low[3]  − 3·spread (mother-bar low)
+//   EM3 sell     — entry = low[1]  − spread, SL = high[3] + 3·spread (mother-bar high)
+//   EM4 buy      — entry = high[1] + spread, SL = low[1]  − 3·spread (wick tip below)
+//   EM4 sell     — entry = low[1]  − spread, SL = high[1] + 3·spread (wick tip above)
+// Note: EM1/EM2/EM4 share the same entry/SL formula (diff is just pattern),
+// so tiebreak among those three is indistinguishable — we use declaration
+// order (EM1 → EM2 → EM4). EM3 uses mother-bar low/high so its SL distance
+// differs; if it wins on tightest-SL basis, it's selected.
+
+// Calculate candidate SL distances for tiebreaker
+float sp   = spread_tick
+float em1_buy_entry  = high[1] + inputSpread * sp, em1_buy_sl  = low[1]  - 3 * sp
+float em1_sell_entry = low[1]  - inputSpread * sp, em1_sell_sl = high[1] + 3 * sp
+float em3_buy_sl     = low[3]  - 3 * sp
+float em3_sell_sl    = high[3] + 3 * sp
+
+// Pick winner: build (model, entry, SL, text) from whichever has the tightest SL
+string chosen_model = na
+float  chosen_entry = na
+float  chosen_sl    = na
+color  chosen_bias  = na
+bool   isBuy        = false
+if fire_em1_buy or fire_em2_buy or fire_em3_buy or fire_em4_buy
+    isBuy := true
+    // Smallest entry − SL wins. For EM1/EM2/EM4 (same formula) → EM1 wins by declaration order.
+    float cand_em1_dist = fire_em1_buy ? (em1_buy_entry - em1_buy_sl) : 1e20
+    float cand_em2_dist = fire_em2_buy ? (em1_buy_entry - em1_buy_sl) : 1e20
+    float cand_em3_dist = fire_em3_buy ? (em1_buy_entry - em3_buy_sl) : 1e20
+    float cand_em4_dist = fire_em4_buy ? (em1_buy_entry - em1_buy_sl) : 1e20
+    float min_dist = math.min(math.min(cand_em1_dist, cand_em2_dist), math.min(cand_em3_dist, cand_em4_dist))
+    if fire_em1_buy and cand_em1_dist == min_dist
+        chosen_model := "EM1"
+        chosen_entry := em1_buy_entry, chosen_sl := em1_buy_sl
+    else if fire_em2_buy and cand_em2_dist == min_dist
+        chosen_model := "EM2"
+        chosen_entry := em1_buy_entry, chosen_sl := em1_buy_sl
+    else if fire_em4_buy and cand_em4_dist == min_dist
+        chosen_model := "EM4"
+        chosen_entry := em1_buy_entry, chosen_sl := em1_buy_sl
+    else if fire_em3_buy and cand_em3_dist == min_dist
+        chosen_model := "EM3"
+        chosen_entry := em1_buy_entry, chosen_sl := em3_buy_sl
+    chosen_bias := buy_c
+else if fire_em1_sell or fire_em2_sell or fire_em3_sell or fire_em4_sell
+    isBuy := false
+    float cand_em1_dist = fire_em1_sell ? (em1_sell_sl - em1_sell_entry) : 1e20
+    float cand_em2_dist = fire_em2_sell ? (em1_sell_sl - em1_sell_entry) : 1e20
+    float cand_em3_dist = fire_em3_sell ? (em3_sell_sl - em1_sell_entry) : 1e20
+    float cand_em4_dist = fire_em4_sell ? (em1_sell_sl - em1_sell_entry) : 1e20
+    float min_dist = math.min(math.min(cand_em1_dist, cand_em2_dist), math.min(cand_em3_dist, cand_em4_dist))
+    if fire_em1_sell and cand_em1_dist == min_dist
+        chosen_model := "EM1"
+        chosen_entry := em1_sell_entry, chosen_sl := em1_sell_sl
+    else if fire_em2_sell and cand_em2_dist == min_dist
+        chosen_model := "EM2"
+        chosen_entry := em1_sell_entry, chosen_sl := em1_sell_sl
+    else if fire_em4_sell and cand_em4_dist == min_dist
+        chosen_model := "EM4"
+        chosen_entry := em1_sell_entry, chosen_sl := em1_sell_sl
+    else if fire_em3_sell and cand_em3_dist == min_dist
+        chosen_model := "EM3"
+        chosen_entry := em1_sell_entry, chosen_sl := em3_sell_sl
+    chosen_bias := sell_c
+
+// ── FIRE THE TRADE if a model was chosen ──
+if not na(chosen_model)
+    trade.bar        := bar_index
+    trade.triggerBar := na
+    trade.time       := time
+    trade.status     := "Active"
+    trade.entry      := math.round(chosen_entry, digits)
+    trade.sl         := math.round(chosen_sl,    digits)
+    trade.tp1        := math.round(2 * trade.entry - trade.sl, digits)
+    trade.tp2        := math.round(3 * trade.entry - 2 * trade.sl, digits)
+    trade.bias       := chosen_bias
+    trade.model      := chosen_model
+    trade.tp1hit     := false
+    string lbl_text = showLabel == "Symbol" ? "" : chosen_model
+    if isBuy
+        f_DTG_algo(DTG_Signal, bar_index, low,  yloc.belowbar, buy_c,  buy_style,  lbl_text, txt_c, label_size)
+    else
+        f_DTG_algo(DTG_Signal, bar_index, high, yloc.abovebar, sell_c, sell_style, lbl_text, txt_c, label_size)
+    alert(chosen_model + " " + (isBuy ? "buy" : "sell") + " setup on the " + TF_txt + " Consult data table before proceeding.", alert.freq_once_per_bar)
+
+f_LABEL_truncate(DTG_Signal, showMax)
+
+// ── RAW PATTERN ALERTS (no system gate) — for users who want pattern-only alerts ──
+bool rawBuy  = (buySignal)  and trade.status != "Triggered" and overallBias == 1
+bool rawSell = (sellSignal) and trade.status != "Triggered" and overallBias == -1
+
+bool validBuy  = not na(chosen_model) and isBuy
+bool validSell = not na(chosen_model) and not isBuy
+
+alertcondition(validBuy or validSell,  title="System Signal",  message="DTG V8: Valid SYSTEM signal. Check dashboard for trade details.")
+alertcondition(rawBuy or rawSell,      title="Pattern Signal", message="DTG V8: EM pattern detected (system rules not applied).")
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §12  TRADE STATUS MACHINE  (relocated with §10)
+// ─────────────────────────────────────────────────────────────────────────────
+
+if trade.status == "Active" and (bar_index - nz(trade.bar)) == 0
+    if trade.bias == sell_c and low < trade.entry
+        trade.status     := "Triggered"
+        trade.triggerBar := bar_index
+    else if trade.bias == buy_c and high > trade.entry
+        trade.status     := "Triggered"
+        trade.triggerBar := bar_index
+    else
+        trade.status := "Active"
+
+if trade.status == "Active" and (bar_index - nz(trade.bar)) == 1
+    trade.status := "Invalid"
+
+if trade.status == "Invalid"
+    if bar_index - nz(trade.bar) > 1
+        trade.status := "Scanning"
+
+// Triggered = live trade. Only exits on TP2, SL, or BE (entry) hit.
+// V8.1 FIX #1: wasTP1hit snapshot prevents same-bar TP1+BE race.
+// V8.1 FIX #2: gate with bar_index > trade.triggerBar — skip the trigger bar
+//              so a pre-trigger wick through SL isn't counted as a loss.
+if trade.status == "Triggered" and bar_index > nz(trade.triggerBar)
+    bool wasTP1hit = trade.tp1hit
+    bool checkTP1  = (trade.bias == buy_c and high > trade.tp1) or (trade.bias == sell_c and low < trade.tp1)
+    if checkTP1
+        trade.tp1hit := true
+    bool hitTP2 = (trade.bias == sell_c and low < trade.tp2) or (trade.bias == buy_c and high > trade.tp2)
+    bool hitSL  = not wasTP1hit and ((trade.bias == sell_c and high > trade.sl) or (trade.bias == buy_c and low < trade.sl))
+    bool hitBE  = wasTP1hit and ((trade.bias == buy_c and low < trade.entry) or (trade.bias == sell_c and high > trade.entry))
+    if hitTP2 or hitBE or hitSL
+        if hitTP2
+            dailyProfitTaken := true
+        int   outcomeCode = hitTP2 ? 1 : hitBE ? 0 : -1
+        float rMult       = outcomeCode == 1 ? 2.0 : outcomeCode == 0 ? 1.0 : -1.0
+        TradeRecord rec = TradeRecord.new(bar=trade.bar, exitBar=bar_index, time=trade.time, exitTime=time, entry=trade.entry, sl=trade.sl, tp1=trade.tp1, tp2=trade.tp2, dir=trade.bias == buy_c ? 1 : -1, outcome=outcomeCode, rMultiple=rMult, model=trade.model, zoneTF=trade.zoneTF)
+        array.push(trades, rec)
+        if array.size(trades) > statsMax
+            array.shift(trades)
+        trade.status := "Scanning"
+        trade.tp1hit := false
+
+if na(trade.status)
+    trade.status := "None"
+
+noSignal_Bias = (trade.status == "Scanning" or trade.status == "None") ? H4_c : trade.bias
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -771,7 +1042,10 @@ if barstate.islast and autoDiscount
         color tzFill   = zone.bias == 1 ? bull_fill : zone.bias == -1 ? bear_fill : color.new(color.yellow, 80)
         color tzBorder = zone.bias == 1 ? bull_border : zone.bias == -1 ? bear_border : color.yellow
         color tzMidClr = zone.bias == 1 ? color.new(color.green, 30) : zone.bias == -1 ? color.new(color.red, 30) : color.new(color.yellow, 30)
-        string tzLabel = (na(zone.tfLabel) ? "" : zone.tfLabel) + " Discount"
+        // Frozen zone label — includes confluence score from the zone that fired the trade
+        int frozenConfTotal = zone.tfLabel == "4H" ? conf_4h.total : zone.tfLabel == "6H" ? conf_6h.total : zone.tfLabel == "8H" ? conf_8h.total : zone.tfLabel == "12H" ? conf_12h.total : zone.tfLabel == "Daily" ? conf_D.total : 0
+        string frozenScoreTxt = showZoneScore and frozenConfTotal > 0 ? " · Σ" + str.tostring(frozenConfTotal) : ""
+        string tzLabel = (na(zone.tfLabel) ? "" : zone.tfLabel) + " Discount" + frozenScoreTxt
         tradeZoneBox := box.new(zone.openTime, zone.zt, zone.closeTime, zone.zb, xloc=xloc.bar_time, border_color=tzBorder, bgcolor=tzFill, border_width=1, border_style=line.style_solid)
         tradeZoneLbl := label.new(zone.closeTime, math.avg(zone.zt, zone.zb), tzLabel, xloc=xloc.bar_time, color=color.new(color.black, 100), textcolor=tzBorder, style=label.style_label_left, size=size.small)
         float tzMid = math.avg(zone.zt, zone.zb)
@@ -1052,7 +1326,18 @@ if showTable and barstate.islast
     table.cell(main_table, 1, 4, "System", text_color=labelTxt, text_size=tblSize, bgcolor=dividerBG, text_halign=text.align_right)
     table.cell(main_table, 2, 4, systemStateStr, text_color=color.white, text_size=tblSize, bgcolor=color.new(systemStateClr, 20), text_halign=text.align_center)
 
-    string modelStr = showTrade and not na(trade.model) ? trade.model : "—"
+    // Row 5 — Model + Confluence (combined). Shows the EM that fired (or "—" when
+    // scanning), plus the confluence score of the relevant zone. While scanning,
+    // the active zone's live score is shown so you can see confluence building.
+    int dashConfTotal = 0
+    string dashConfZone = ""
+    if showTrade and not na(trade.zoneTF)
+        dashConfTotal := trade.zoneTF == "4H" ? conf_4h.total : trade.zoneTF == "6H" ? conf_6h.total : trade.zoneTF == "8H" ? conf_8h.total : trade.zoneTF == "12H" ? conf_12h.total : trade.zoneTF == "Daily" ? conf_D.total : 0
+        dashConfZone := trade.zoneTF
+    else
+        dashConfTotal := activeZone == 1 ? conf_4h.total : activeZone == 2 ? conf_6h.total : activeZone == 3 ? conf_8h.total : activeZone == 4 ? conf_12h.total : activeZone == 5 ? conf_D.total : 0
+        dashConfZone := activeZone == 1 ? "4H" : activeZone == 2 ? "6H" : activeZone == 3 ? "8H" : activeZone == 4 ? "12H" : activeZone == 5 ? "D" : ""
+    string modelStr = (showTrade and not na(trade.model) ? trade.model : "—") + (dashConfTotal > 0 ? " · Σ" + str.tostring(dashConfTotal) + (dashConfZone != "" ? " " + dashConfZone : "") : "")
     color  modelClr = trade.bias
     table.cell(main_table, 0, 5, "", bgcolor=baseBG)
     table.cell(main_table, 1, 5, "Model", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
