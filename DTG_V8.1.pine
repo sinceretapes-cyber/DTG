@@ -304,7 +304,10 @@ sell_style = showLabel == "Symbol" ? label.style_triangledown : label.style_labe
 em1_text   = showLabel == "Symbol" ? "" : "EM1"
 
 // ── 3-STEP SYSTEM GATE (EM1) ──
-bool em1_hasTouchedZones = dashStk_4h or dashStk_6h or dashStk_8h or dashStk_12h or dashStk_D or dashStk_W
+// Weekly discount zone is deliberately excluded from signal eligibility.
+// The weekly zone still draws and tracks touches, but a weekly-only tap
+// cannot satisfy Step 2 — signals must come from 4H/6H/8H/12H/Daily.
+bool em1_hasTouchedZones = dashStk_4h or dashStk_6h or dashStk_8h or dashStk_12h or dashStk_D
 bool em1_stepTwoValid = requireZoneTap ? (stepTwoMet and stepTwoBias == overallBias and overallBias != 0 and em1_hasTouchedZones) : (overallBias != 0)
 bool em1_systemReady  = em1_stepTwoValid and (not oneTradePerDay or not dailyProfitTaken)
 bool em1_allowed      = trade_Status != "Triggered" and em1_systemReady
@@ -577,13 +580,19 @@ if not m_W
     dashStk_W := false
 
 // ── 3-STEP SYSTEM: STEP 2 — Zone Touch Tracking ──
+// Weekly zone is excluded from Step-2 eligibility — only 4H/6H/8H/12H/Daily
+// taps can arm the system. A weekly-only tap must not flip stepTwoMet.
 bool tapInWindow = windowTapsOnly ? mergedTW : true
-if touchCount > 0 and overallBias != 0 and tapInWindow
+int  signalTouchCount = (touch_4h ? 1 : 0) + (touch_6h ? 1 : 0) + (touch_8h ? 1 : 0) + (touch_12h ? 1 : 0) + (touch_D ? 1 : 0)
+if signalTouchCount > 0 and overallBias != 0 and tapInWindow
     stepTwoMet  := true
     stepTwoBias := overallBias
 
 bool anyDashTouched = dashStk_4h or dashStk_6h or dashStk_8h or dashStk_12h or dashStk_D or dashStk_W
-if stepTwoMet and not anyDashTouched
+// Signal-eligible touch set (weekly excluded) — used to de-arm Step 2 when no
+// signalable zone remains. If only weekly is still touched, Step 2 goes idle.
+bool anyDashTouchedSignalable = dashStk_4h or dashStk_6h or dashStk_8h or dashStk_12h or dashStk_D
+if stepTwoMet and not anyDashTouchedSignalable
     stepTwoMet  := false
     stepTwoBias := 0
 
