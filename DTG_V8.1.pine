@@ -52,6 +52,12 @@ windowTapsOnly  = input.bool(true, "Zone Taps During Window Only", group=grpSyst
 oneTradePerDay  = input.bool(true, "One Trade Per Day", group=grpSystem, tooltip="After a winning trade (TP2 hit), no more signals for the day. SL/BE trades allow retries.")
 requireZoneTap  = input.bool(true, "Require Zone Tap for Signal", group=grpSystem, tooltip="Enforce Step 2: signals only fire after a discount zone has been tapped. Turn off to allow signals without a zone tap.")
 
+// ── STATISTICS ──
+grpStats     = "Statistics"
+showStats    = input.bool(true, "Performance Stats", group=grpStats, tooltip="Show win rate, expectancy, profit factor, and streak on the dashboard when no trade is active.")
+statsScope   = input.string("All Time", "Scope", options=["Today", "All Time"], group=grpStats, tooltip="Today: count only trades that closed since last daily reset. All Time: every tracked trade.")
+statsMax     = input.int(200, "Max Trades Tracked", minval=20, maxval=500, group=grpStats, tooltip="Ring buffer size. Oldest trade is dropped once full.")
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §4  UTILITY FUNCTIONS
@@ -133,6 +139,7 @@ type TradeState
     float  tp2          = na
     color  bias         = na
     string model        = na
+    string zoneTF       = na
     bool   tp1hit       = false
 
 // ── Discount-zone snapshot frozen at signal time ──
@@ -153,11 +160,15 @@ type BgTrade
     int    bar          = na
     int    time         = na
     int    dir          = 0
+    string model        = na
+    string zoneTF       = na
     bool   active       = false
     bool   tp1hit       = false
 
-// ── Last-completed-trade record (single slot) ──
-type TradeHistory
+// ── Completed-trade record — one per closed trade in the trades[] array ──
+// outcome: +1 = TP2 win, 0 = 1:1 secured (TP1 hit, then entry), -1 = SL loss
+// rMultiple: realized R — +2 for win, +1 for 1:1, -1 for loss
+type TradeRecord
     int    bar          = na
     int    exitBar      = na
     int    time         = na
@@ -168,12 +179,18 @@ type TradeHistory
     float  tp2          = na
     int    dir          = 0
     int    outcome      = 0
-    bool   valid        = false
+    float  rMultiple    = 0.0
+    string model        = na
+    string zoneTF       = na
 
 var TradeState    trade = TradeState.new()
 var ZoneSnapshot  zone  = ZoneSnapshot.new()
 var BgTrade       bg    = BgTrade.new()
-var TradeHistory  hist  = TradeHistory.new()
+
+// ── Trade history array — ring buffer, oldest trimmed once `statsMax` reached ──
+var array<TradeRecord> trades = array.new<TradeRecord>()
+// ── Day boundary for "Today" scope — stamped on each daily reset ──
+var int todayStartTime = na
 
 // ── 3-STEP SYSTEM STATE ──
 var bool stepTwoMet        = false
@@ -195,6 +212,7 @@ bool sellSignal = false
 // If a Triggered trade is still live, move it to background monitoring so it can
 // still complete (TP2/SL) across day boundaries. Main system resets freely.
 if timeframe.change("D")
+    todayStartTime := time
     if trade.status == "Triggered" and not na(trade.entry)
         bg.entry  := trade.entry
         bg.sl     := trade.sl
@@ -203,6 +221,8 @@ if timeframe.change("D")
         bg.bar    := trade.bar
         bg.time   := trade.time
         bg.dir    := trade.bias == buy_c ? 1 : -1
+        bg.model  := trade.model
+        bg.zoneTF := trade.zoneTF
         bg.tp1hit := trade.tp1hit
         bg.active := true
     stepTwoMet       := false
@@ -218,6 +238,7 @@ if timeframe.change("D")
     trade.tp2        := na
     trade.bias       := na
     trade.model      := na
+    trade.zoneTF     := na
     trade.tp1hit     := false
     zone.zt          := na
     zone.zb          := na
@@ -240,14 +261,12 @@ if bg.active
     bool bg_hitSL  = not bg_wasTP1hit and ((bg_isBuy and low < bg.sl) or (not bg_isBuy and high > bg.sl))
     bool bg_hitBE  = bg_wasTP1hit and ((bg_isBuy and low < bg.entry) or (not bg_isBuy and high > bg.entry))
     if bg_hitTP2 or bg_hitBE or bg_hitSL
-        if showHistory
-            hist.bar := bg.bar, hist.exitBar := bar_index
-            hist.time := bg.time, hist.exitTime := time
-            hist.entry := bg.entry, hist.sl := bg.sl
-            hist.tp1 := bg.tp1, hist.tp2 := bg.tp2
-            hist.dir := bg.dir
-            hist.outcome := bg_hitTP2 ? 1 : bg_hitBE ? 0 : -1
-            hist.valid := true
+        int   bgOutcome = bg_hitTP2 ? 1 : bg_hitBE ? 0 : -1
+        float bgRmult   = bgOutcome == 1 ? 2.0 : bgOutcome == 0 ? 1.0 : -1.0
+        TradeRecord rec = TradeRecord.new(bar=bg.bar, exitBar=bar_index, time=bg.time, exitTime=time, entry=bg.entry, sl=bg.sl, tp1=bg.tp1, tp2=bg.tp2, dir=bg.dir, outcome=bgOutcome, rMultiple=bgRmult, model=bg.model, zoneTF=bg.zoneTF)
+        array.push(trades, rec)
+        if array.size(trades) > statsMax
+            array.shift(trades)
         bg.active := false
         bg.tp1hit := false
 
@@ -406,14 +425,12 @@ if trade.status == "Triggered" and bar_index > nz(trade.triggerBar)
     if hitTP2 or hitBE or hitSL
         if hitTP2
             dailyProfitTaken := true
-        if showHistory
-            hist.bar := trade.bar, hist.exitBar := bar_index
-            hist.time := trade.time, hist.exitTime := time
-            hist.entry := trade.entry, hist.sl := trade.sl
-            hist.tp1 := trade.tp1, hist.tp2 := trade.tp2
-            hist.dir := trade.bias == buy_c ? 1 : -1
-            hist.outcome := hitTP2 ? 1 : hitBE ? 0 : -1
-            hist.valid := true
+        int   outcomeCode = hitTP2 ? 1 : hitBE ? 0 : -1
+        float rMult       = outcomeCode == 1 ? 2.0 : outcomeCode == 0 ? 1.0 : -1.0
+        TradeRecord rec = TradeRecord.new(bar=trade.bar, exitBar=bar_index, time=trade.time, exitTime=time, entry=trade.entry, sl=trade.sl, tp1=trade.tp1, tp2=trade.tp2, dir=trade.bias == buy_c ? 1 : -1, outcome=outcomeCode, rMultiple=rMult, model=trade.model, zoneTF=trade.zoneTF)
+        array.push(trades, rec)
+        if array.size(trades) > statsMax
+            array.shift(trades)
         trade.status := "Scanning"
         trade.tp1hit := false
 
@@ -687,6 +704,9 @@ if (trade.status == "Active" or trade.status == "Triggered") and trade.bar == ba
     zone.closeTime := activeCloseTime
     zone.tfLabel   := activeZoneStr
     zone.bias      := overallBias
+    // Stamp the source zone TF onto the trade record too — surfaces in stats
+    // so users can see win-rate segmented by zone TF.
+    trade.zoneTF   := activeZoneStr
 
 if trade.status == "Scanning" or trade.status == "None"
     zone.zt        := na
@@ -773,35 +793,38 @@ if barstate.islast and showHistory
     line.delete(lastEntry)
     label.delete(lastLbl)
 
-    if hist.valid and not na(hist.time) and not na(hist.exitTime)
-        bool  isWin    = hist.outcome == 1
-        bool  isBE     = hist.outcome == 0
-        color slBG     = color.new(#FF1744, 92)
-        color tp1BG    = color.new(#00C853, 92)
-        color tp2BG    = color.new(#00E676, 94)
-        int   minWidth = timeframe.in_seconds() * 1000 * 3
-        int   hLeft    = hist.time
-        int   hRight   = math.max(hist.exitTime, hist.time + minWidth)
+    // Read the most recently closed trade from the ring buffer.
+    if array.size(trades) > 0
+        TradeRecord last = array.last(trades)
+        if not na(last.time) and not na(last.exitTime)
+            bool  isWin    = last.outcome == 1
+            bool  isBE     = last.outcome == 0
+            color slBG     = color.new(#FF1744, 92)
+            color tp1BG    = color.new(#00C853, 92)
+            color tp2BG    = color.new(#00E676, 94)
+            int   minWidth = timeframe.in_seconds() * 1000 * 3
+            int   hLeft    = last.time
+            int   hRight   = math.max(last.exitTime, last.time + minWidth)
 
-        if hist.dir == 1
-            lastBoxSL  := box.new(hLeft, hist.entry, hRight, hist.sl,    xloc=xloc.bar_time, border_color=color.new(#FF1744, 70), bgcolor=slBG,  border_width=1)
-            lastBoxTP1 := box.new(hLeft, hist.tp1,   hRight, hist.entry, xloc=xloc.bar_time, border_color=color.new(#00C853, 70), bgcolor=tp1BG, border_width=1)
-            lastBoxTP2 := box.new(hLeft, hist.tp2,   hRight, hist.tp1,   xloc=xloc.bar_time, border_color=color.new(#00E676, 70), bgcolor=tp2BG, border_width=1)
-        else
-            lastBoxSL  := box.new(hLeft, hist.sl,    hRight, hist.entry, xloc=xloc.bar_time, border_color=color.new(#FF1744, 70), bgcolor=slBG,  border_width=1)
-            lastBoxTP1 := box.new(hLeft, hist.entry, hRight, hist.tp1,   xloc=xloc.bar_time, border_color=color.new(#00C853, 70), bgcolor=tp1BG, border_width=1)
-            lastBoxTP2 := box.new(hLeft, hist.tp1,   hRight, hist.tp2,   xloc=xloc.bar_time, border_color=color.new(#00E676, 70), bgcolor=tp2BG, border_width=1)
+            if last.dir == 1
+                lastBoxSL  := box.new(hLeft, last.entry, hRight, last.sl,    xloc=xloc.bar_time, border_color=color.new(#FF1744, 70), bgcolor=slBG,  border_width=1)
+                lastBoxTP1 := box.new(hLeft, last.tp1,   hRight, last.entry, xloc=xloc.bar_time, border_color=color.new(#00C853, 70), bgcolor=tp1BG, border_width=1)
+                lastBoxTP2 := box.new(hLeft, last.tp2,   hRight, last.tp1,   xloc=xloc.bar_time, border_color=color.new(#00E676, 70), bgcolor=tp2BG, border_width=1)
+            else
+                lastBoxSL  := box.new(hLeft, last.sl,    hRight, last.entry, xloc=xloc.bar_time, border_color=color.new(#FF1744, 70), bgcolor=slBG,  border_width=1)
+                lastBoxTP1 := box.new(hLeft, last.entry, hRight, last.tp1,   xloc=xloc.bar_time, border_color=color.new(#00C853, 70), bgcolor=tp1BG, border_width=1)
+                lastBoxTP2 := box.new(hLeft, last.tp1,   hRight, last.tp2,   xloc=xloc.bar_time, border_color=color.new(#00E676, 70), bgcolor=tp2BG, border_width=1)
 
-        lastEntry := line.new(hLeft, hist.entry, hRight, hist.entry, xloc=xloc.bar_time, color=color.new(#FFFFFF, 60), style=line.style_dotted, width=1)
+            lastEntry := line.new(hLeft, last.entry, hRight, last.entry, xloc=xloc.bar_time, color=color.new(#FFFFFF, 60), style=line.style_dotted, width=1)
 
-        string outTxt  = isWin ? "W" : isBE ? "1:1" : "L"
-        color  outLblC = isWin ? color.new(#00C853, 20) : isBE ? color.new(#00C853, 30) : color.new(#FF1744, 20)
-        int    lblTime = int(math.avg(hLeft, hRight))
-        float  lblY    = hist.tp2
-        if hist.dir == 1
-            lastLbl := label.new(lblTime, lblY, outTxt, xloc=xloc.bar_time, color=outLblC, textcolor=color.white, style=label.style_label_down, size=size.tiny)
-        else
-            lastLbl := label.new(lblTime, lblY, outTxt, xloc=xloc.bar_time, color=outLblC, textcolor=color.white, style=label.style_label_up, size=size.tiny)
+            string outTxt  = isWin ? "W" : isBE ? "1:1" : "L"
+            color  outLblC = isWin ? color.new(#00C853, 20) : isBE ? color.new(#00C853, 30) : color.new(#FF1744, 20)
+            int    lblTime = int(math.avg(hLeft, hRight))
+            float  lblY    = last.tp2
+            if last.dir == 1
+                lastLbl := label.new(lblTime, lblY, outTxt, xloc=xloc.bar_time, color=outLblC, textcolor=color.white, style=label.style_label_down, size=size.tiny)
+            else
+                lastLbl := label.new(lblTime, lblY, outTxt, xloc=xloc.bar_time, color=outLblC, textcolor=color.white, style=label.style_label_up, size=size.tiny)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -886,6 +909,81 @@ if barstate.islast and autoDiscount
     if not na(fib_line)
         line.delete(fib_line)
         fib_line := na
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §17b  PERFORMANCE STATS — computed on last bar from `trades[]`
+// ─────────────────────────────────────────────────────────────────────────────
+// Scope=Today counts only records whose exit time is ≥ todayStartTime (the
+// current day's reset). Scope=All Time iterates the whole buffer. Current
+// streak walks from the newest record backwards while outcome sign is stable.
+//   rMultiple: +2 = TP2 win, +1 = 1:1 secured, -1 = SL
+//   Profit factor = sum of positive R / abs(sum of negative R)
+//   Expectancy    = average rMultiple per trade
+//   Streak text prefixes: "W" winning, "L" losing, "—" empty
+
+int   stats_total  = 0
+int   stats_wins   = 0
+int   stats_ones   = 0
+int   stats_losses = 0
+float stats_sumR   = 0.0
+float stats_gross  = 0.0
+float stats_loss   = 0.0
+
+if showStats and barstate.islast and array.size(trades) > 0
+    int n = array.size(trades)
+    for i = 0 to n - 1
+        TradeRecord r = array.get(trades, i)
+        bool inScope = statsScope == "All Time" or (not na(todayStartTime) and not na(r.exitTime) and r.exitTime >= todayStartTime)
+        if inScope
+            stats_total  += 1
+            stats_sumR   += r.rMultiple
+            if r.outcome == 1
+                stats_wins += 1
+            else if r.outcome == 0
+                stats_ones += 1
+            else
+                stats_losses += 1
+            if r.rMultiple > 0
+                stats_gross += r.rMultiple
+            else
+                stats_loss  += -r.rMultiple
+
+// Streak sign: look at the newest in-scope record. Walk back while outcome
+// stays in the same "winning" / "losing" bucket (1:1 counts as neutral-winning
+// since it closes at BE+TP1, so we group outcome >= 0 as the winning side).
+int   stats_streak     = 0
+int   stats_streakSign = 0
+if showStats and barstate.islast and array.size(trades) > 0
+    int n2 = array.size(trades)
+    int walkIdx = n2 - 1
+    // Skip any out-of-scope records at the tail
+    if statsScope == "Today"
+        while walkIdx >= 0
+            TradeRecord tail = array.get(trades, walkIdx)
+            bool inS = not na(todayStartTime) and not na(tail.exitTime) and tail.exitTime >= todayStartTime
+            if inS
+                break
+            walkIdx -= 1
+    if walkIdx >= 0
+        TradeRecord head = array.get(trades, walkIdx)
+        stats_streakSign := head.outcome >= 0 ? 1 : -1
+        stats_streak     := 1
+        walkIdx          -= 1
+        while walkIdx >= 0
+            TradeRecord r2 = array.get(trades, walkIdx)
+            bool inS2 = statsScope == "All Time" or (not na(todayStartTime) and not na(r2.exitTime) and r2.exitTime >= todayStartTime)
+            if not inS2
+                break
+            int thisSign = r2.outcome >= 0 ? 1 : -1
+            if thisSign != stats_streakSign
+                break
+            stats_streak += 1
+            walkIdx      -= 1
+
+float stats_winRate    = stats_total > 0 ? 100.0 * (stats_wins + stats_ones) / stats_total : na
+float stats_expectancy = stats_total > 0 ? stats_sumR / stats_total : na
+float stats_pf         = stats_loss > 0 ? stats_gross / stats_loss : (stats_gross > 0 ? 999.0 : na)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1008,8 +1106,49 @@ if showTable and barstate.islast
         table.cell(main_table, 0, 10, "", bgcolor=baseBG)
         table.cell(main_table, 1, 10, "Lots",     text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
         table.cell(main_table, 2, 10, str.tostring(lotVal_d, isCrypto ? "#.####" : "#.##") + " " + lotUnit_d, text_color=color.new(#00E5FF, 0), text_size=tblSize, bgcolor=tradeCellBG, text_halign=text.align_center)
+    else if showStats and stats_total > 0
+        // Performance stats occupy rows 6-10 when no trade is active.
+        // Colors key to outcome: green for positive expectancy/PF>1, red otherwise.
+        color statsPosBG = color.new(#00C853, 70)
+        color statsNegBG = color.new(#FF1744, 70)
+        color statsNeuBG = color.new(#5A5A8F, 70)
+
+        // Row 6 — Total trades (scope-aware)
+        string scopeTag = statsScope == "Today" ? " (Today)" : ""
+        table.cell(main_table, 0, 6, "", bgcolor=baseBG)
+        table.cell(main_table, 1, 6, "Trades" + scopeTag, text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+        table.cell(main_table, 2, 6, str.tostring(stats_total), text_color=valueTxt, text_size=tblSize, bgcolor=statsNeuBG, text_halign=text.align_center)
+
+        // Row 7 — Win rate (W+1:1 as "closes at profit or BE+")
+        color wrBG = stats_winRate >= 50 ? statsPosBG : statsNegBG
+        string wrText = na(stats_winRate) ? "—" : str.tostring(stats_winRate, "#.0") + "%"
+        table.cell(main_table, 0, 7, "", bgcolor=baseBG)
+        table.cell(main_table, 1, 7, "Win Rate", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+        table.cell(main_table, 2, 7, wrText, text_color=valueTxt, text_size=tblSize, bgcolor=wrBG, text_halign=text.align_center)
+
+        // Row 8 — Expectancy in R
+        color exBG = stats_expectancy > 0 ? statsPosBG : stats_expectancy < 0 ? statsNegBG : statsNeuBG
+        string exText = na(stats_expectancy) ? "—" : (stats_expectancy >= 0 ? "+" : "") + str.tostring(stats_expectancy, "#.##") + "R"
+        table.cell(main_table, 0, 8, "", bgcolor=baseBG)
+        table.cell(main_table, 1, 8, "Expectancy", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+        table.cell(main_table, 2, 8, exText, text_color=valueTxt, text_size=tblSize, bgcolor=exBG, text_halign=text.align_center)
+
+        // Row 9 — Profit factor
+        color pfBG = na(stats_pf) ? statsNeuBG : stats_pf >= 1.5 ? statsPosBG : stats_pf >= 1.0 ? statsNeuBG : statsNegBG
+        string pfText = na(stats_pf) ? "—" : stats_pf >= 999 ? "∞" : str.tostring(stats_pf, "#.##")
+        table.cell(main_table, 0, 9, "", bgcolor=baseBG)
+        table.cell(main_table, 1, 9, "Profit Factor", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+        table.cell(main_table, 2, 9, pfText, text_color=valueTxt, text_size=tblSize, bgcolor=pfBG, text_halign=text.align_center)
+
+        // Row 10 — Current streak with W/L prefix
+        color stBG = stats_streakSign > 0 ? statsPosBG : stats_streakSign < 0 ? statsNegBG : statsNeuBG
+        string stText = stats_streak == 0 ? "—" : (stats_streakSign > 0 ? "W" : "L") + str.tostring(stats_streak)
+        table.cell(main_table, 0, 10, "", bgcolor=baseBG)
+        table.cell(main_table, 1, 10, "Streak", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+        table.cell(main_table, 2, 10, stText, text_color=valueTxt, text_size=tblSize, bgcolor=stBG, text_halign=text.align_center)
     else
-        table.clear(main_table, 0, 5, 2, 10)
+        // No active trade and no stats to show — blank rows 6-10 (Model row 5 stays)
+        table.clear(main_table, 0, 6, 2, 10)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §19  END
