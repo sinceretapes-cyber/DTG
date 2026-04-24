@@ -67,11 +67,11 @@ em4_wickRatio  = input.float(1.5,  "Min Wick:Body Ratio", minval=1.0, step=0.1, 
 em4_atrLen     = input.int(14, "ATR Length", minval=1, group=grpEM4)
 em4_minAtrPct  = input.float(40.0, "Min Candle Size (% of ATR)", minval=0, step=5, group=grpEM4, tooltip="Candle range must be at least this % of ATR. 0 = disabled.")
 
-// ── STATISTICS ──
-grpStats     = "Statistics"
-showStats    = input.bool(true, "Performance Stats", group=grpStats, tooltip="Show win rate, expectancy, profit factor, and streak on the dashboard when no trade is active.")
-statsScope   = input.string("All Time", "Scope", options=["Today", "All Time"], group=grpStats, tooltip="Today: count only trades that closed since last daily reset. All Time: every tracked trade.")
-statsMax     = input.int(200, "Max Trades Tracked", minval=20, maxval=500, group=grpStats, tooltip="Ring buffer size. Oldest trade is dropped once full.")
+// ── STATISTICS / STREAK INTELLIGENCE ──
+grpStats       = "Streak Intelligence"
+showStats      = input.bool(true, "Show Streak Intelligence", group=grpStats, tooltip="Show current streak metrics, after-streak transition probabilities, and common win/loss pattern analysis.")
+streakSample   = input.string("200", "Analyze Last N Trades", options=["200", "300", "500", "All"], group=grpStats, tooltip="Sample size for streak analysis. Uses only completed trades in the buffer (capped by Max Trades Tracked).")
+statsMax       = input.int(500, "Max Trades Tracked", minval=50, maxval=1000, group=grpStats, tooltip="Ring buffer capacity. Oldest trade is dropped once full. Must be >= the Analyze Last N Trades value for the full sample to be available.")
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1186,78 +1186,303 @@ if barstate.islast and autoDiscount
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §17b  PERFORMANCE STATS — computed on last bar from `trades[]`
+// §17b  STREAK INTELLIGENCE — computed on last bar from `trades[]`
 // ─────────────────────────────────────────────────────────────────────────────
-// Scope=Today counts only records whose exit time is ≥ todayStartTime (the
-// current day's reset). Scope=All Time iterates the whole buffer. Current
-// streak walks from the newest record backwards while outcome sign is stable.
-//   rMultiple: +2 = TP2 win, +1 = 1:1 secured, -1 = SL
-//   Profit factor = sum of positive R / abs(sum of negative R)
-//   Expectancy    = average rMultiple per trade
-//   Streak text prefixes: "W" winning, "L" losing, "—" empty
+// Analyses the last N completed trades (per `streakSample` input) to surface:
+//   • current win / loss streak (separate, so both show)
+//   • after-streak transition probability — "after 1W, 2W, 3W, 4+W → next is W/L"
+//     and symmetric for loss streaks
+//   • most common win/loss patterns (sliding-window n-gram scan over the sample)
+//   • average win streak length + average loss streak length
+//   • highest-probability next-trade outcome given the CURRENT streak
+//   • confidence label derived from sample size of the specific bucket
+//
+// Outcome mapping for streak logic (uses rMultiple so it matches any future
+// partial-close / scaling logic the user might add later — "net profit > 0" ⇒ W):
+//   rMultiple > 0  → Win
+//   rMultiple < 0  → Loss
+//   rMultiple = 0  → Breakeven (excluded from streak counts; tracked separately)
 
-int   stats_total  = 0
-int   stats_wins   = 0
-int   stats_ones   = 0
-int   stats_losses = 0
-float stats_sumR   = 0.0
-float stats_gross  = 0.0
-float stats_loss   = 0.0
+// ── Step 0: Build the analysis sample (filtered, outcome-mapped, newest last) ──
+int   streak_sampleN = streakSample == "200" ? 200 : streakSample == "300" ? 300 : streakSample == "500" ? 500 : 100000
+var array<int> sample = array.new<int>()  // 1 = Win, -1 = Loss, 0 = BE (excluded from streak maths)
+int   streak_beCount = 0
 
-if showStats and barstate.islast and array.size(trades) > 0
-    int n = array.size(trades)
-    for i = 0 to n - 1
+if showStats and barstate.islast
+    array.clear(sample)
+    int bufLen = array.size(trades)
+    int start  = math.max(0, bufLen - streak_sampleN)
+    for i = start to bufLen - 1
         TradeRecord r = array.get(trades, i)
-        bool inScope = statsScope == "All Time" or (not na(todayStartTime) and not na(r.exitTime) and r.exitTime >= todayStartTime)
-        if inScope
-            stats_total  += 1
-            stats_sumR   += r.rMultiple
-            if r.outcome == 1
-                stats_wins += 1
-            else if r.outcome == 0
-                stats_ones += 1
-            else
-                stats_losses += 1
-            if r.rMultiple > 0
-                stats_gross += r.rMultiple
-            else
-                stats_loss  += -r.rMultiple
+        int cat = r.rMultiple > 0 ? 1 : r.rMultiple < 0 ? -1 : 0
+        if cat == 0
+            streak_beCount += 1
+        array.push(sample, cat)
 
-// Streak sign: look at the newest in-scope record. Walk back while outcome
-// stays in the same "winning" / "losing" bucket (1:1 counts as neutral-winning
-// since it closes at BE+TP1, so we group outcome >= 0 as the winning side).
-int   stats_streak     = 0
-int   stats_streakSign = 0
-if showStats and barstate.islast and array.size(trades) > 0
-    int n2 = array.size(trades)
-    int walkIdx = n2 - 1
-    // Skip any out-of-scope records at the tail
-    if statsScope == "Today"
-        while walkIdx >= 0
-            TradeRecord tail = array.get(trades, walkIdx)
-            bool inS = not na(todayStartTime) and not na(tail.exitTime) and tail.exitTime >= todayStartTime
-            if inS
-                break
-            walkIdx -= 1
-    if walkIdx >= 0
-        TradeRecord head = array.get(trades, walkIdx)
-        stats_streakSign := head.outcome >= 0 ? 1 : -1
-        stats_streak     := 1
-        walkIdx          -= 1
-        while walkIdx >= 0
-            TradeRecord r2 = array.get(trades, walkIdx)
-            bool inS2 = statsScope == "All Time" or (not na(todayStartTime) and not na(r2.exitTime) and r2.exitTime >= todayStartTime)
-            if not inS2
-                break
-            int thisSign = r2.outcome >= 0 ? 1 : -1
-            if thisSign != stats_streakSign
-                break
-            stats_streak += 1
-            walkIdx      -= 1
+int streak_total = array.size(sample)
 
-float stats_winRate    = stats_total > 0 ? 100.0 * (stats_wins + stats_ones) / stats_total : na
-float stats_expectancy = stats_total > 0 ? stats_sumR / stats_total : na
-float stats_pf         = stats_loss > 0 ? stats_gross / stats_loss : (stats_gross > 0 ? 999.0 : na)
+// ── Step 1: Walk the sample (W/L only, BE skipped) to compute ──
+//     (a) run-length histogram   — how many streaks of length k ended naturally
+//     (b) "after-k-W → next W/L" transition counts (1,2,3,4+ buckets)
+//     (c) "after-k-L → next W/L" transition counts (1,2,3,4+ buckets)
+//     (d) current win streak and current loss streak separately
+
+// Transition buckets indexed by streak length: idx 0=1-in-row, 1=2, 2=3, 3=4+
+var array<int> aftW_w = array.new<int>(4, 0)  // after k wins, next was a Win
+var array<int> aftW_l = array.new<int>(4, 0)  // after k wins, next was a Loss
+var array<int> aftL_w = array.new<int>(4, 0)  // after k losses, next was a Win
+var array<int> aftL_l = array.new<int>(4, 0)  // after k losses, next was a Loss
+
+// Run-length sums for average streak length (only counts completed streaks —
+// the last, still-open streak is excluded from the average so partials don't skew)
+int winRunCount = 0
+int winRunSum   = 0
+int lossRunCount = 0
+int lossRunSum  = 0
+
+// Current streaks: walk from tail (newest) while outcomes are the same sign
+int curWinStreak  = 0
+int curLossStreak = 0
+
+if showStats and barstate.islast and streak_total > 0
+    // Reset buckets (they're `var` but we recompute fresh every last-bar pass)
+    for k = 0 to 3
+        array.set(aftW_w, k, 0)
+        array.set(aftW_l, k, 0)
+        array.set(aftL_w, k, 0)
+        array.set(aftL_l, k, 0)
+    winRunCount  := 0
+    winRunSum    := 0
+    lossRunCount := 0
+    lossRunSum   := 0
+
+    // Forward pass: track active streak, on each new non-BE outcome update the
+    // "after-streak" bucket for the PRIOR streak length, then either extend or reset.
+    int runSign = 0   // 0 = no active run, +1 = win run, -1 = loss run
+    int runLen  = 0
+    for i = 0 to streak_total - 1
+        int c = array.get(sample, i)
+        if c == 0
+            // BE — skip without breaking or extending the run
+            continue
+        if runSign == 0
+            // First real outcome of the sample — just start a run
+            runSign := c
+            runLen  := 1
+        else if c == runSign
+            // Extending current run
+            runLen += 1
+        else
+            // Run broke. Record the after-streak transition first:
+            // "after runLen of runSign, next was c"
+            int bucket = math.min(runLen, 4) - 1  // 0..3 for lengths 1,2,3,4+
+            if runSign == 1
+                // After a W-run of length runLen, next was L (c == -1 guaranteed)
+                array.set(aftW_l, bucket, array.get(aftW_l, bucket) + 1)
+                winRunCount += 1
+                winRunSum   += runLen
+            else
+                array.set(aftL_w, bucket, array.get(aftL_w, bucket) + 1)
+                lossRunCount += 1
+                lossRunSum   += runLen
+            // Start the new run in the opposite direction
+            runSign := c
+            runLen  := 1
+        // Additionally: an extension within the SAME run also contributes a
+        // transition count — "after (runLen-1) wins, next was a win" etc.
+        // This captures the "after 1 W, next is W" path that otherwise would
+        // only ever be recorded when the streak ends.
+        if runLen >= 2
+            int extBucket = math.min(runLen - 1, 4) - 1
+            if runSign == 1
+                array.set(aftW_w, extBucket, array.get(aftW_w, extBucket) + 1)
+            else
+                array.set(aftL_l, extBucket, array.get(aftL_l, extBucket) + 1)
+
+    // Current streak — walk backwards from newest trade. Only ONE of
+    // curWinStreak / curLossStreak is non-zero at any time:
+    //   latest trade was a Win → curWinStreak = length of current win run
+    //   latest trade was a Loss → curLossStreak = length of current loss run
+    //   (BE-only tail or empty buffer → both stay 0, dashboard shows "—")
+    int j = streak_total - 1
+    // Skip trailing BEs (they neither make nor break a streak)
+    while j >= 0 and array.get(sample, j) == 0
+        j -= 1
+    if j >= 0
+        int seedSign = array.get(sample, j)
+        int runLen2  = 1
+        j -= 1
+        while j >= 0 and array.get(sample, j) == seedSign
+            runLen2 += 1
+            j -= 1
+        if seedSign == 1
+            curWinStreak := runLen2
+        else
+            curLossStreak := runLen2
+
+// ── Step 2: helpers for bucket lookup (bucket = min(len,4) - 1) ──
+f_afterWW(int k) =>
+    int b = math.min(k, 4) - 1
+    b < 0 ? 0 : array.get(aftW_w, b)
+f_afterWL(int k) =>
+    int b = math.min(k, 4) - 1
+    b < 0 ? 0 : array.get(aftW_l, b)
+f_afterLW(int k) =>
+    int b = math.min(k, 4) - 1
+    b < 0 ? 0 : array.get(aftL_w, b)
+f_afterLL(int k) =>
+    int b = math.min(k, 4) - 1
+    b < 0 ? 0 : array.get(aftL_l, b)
+
+// Confidence label based on the sample count of a specific bucket
+f_confLabel(int n) =>
+    n >= 30 ? "High" : n >= 15 ? "Med" : n >= 5 ? "Low" : "—"
+f_confColor(int n) =>
+    n >= 30 ? color.new(#00C853, 0) : n >= 15 ? color.new(#FFB300, 0) : n >= 5 ? color.new(#FF9100, 0) : color.new(#5A5A8F, 0)
+
+// ── Step 3: averages + highest-probability next outcome ──
+float avgWinStreak  = winRunCount  > 0 ? winRunSum  / float(winRunCount)  : na
+float avgLossStreak = lossRunCount > 0 ? lossRunSum / float(lossRunCount) : na
+
+// Next-outcome forecast: use whichever current streak is non-zero.
+// If both are zero (no trades yet), forecast is "—".
+// If current streak is a win-run of length k → look up aftW_w / aftW_l for k.
+// If loss-run of length k → aftL_w / aftL_l for k.
+int   nextFromLen    = 0
+bool  nextFromWin    = false
+int   nextWinCount   = 0
+int   nextLossCount  = 0
+int   nextTotalCount = 0
+if curWinStreak > 0
+    nextFromLen := curWinStreak
+    nextFromWin := true
+    nextWinCount   := f_afterWW(curWinStreak)
+    nextLossCount  := f_afterWL(curWinStreak)
+else if curLossStreak > 0
+    nextFromLen := curLossStreak
+    nextFromWin := false
+    nextWinCount   := f_afterLW(curLossStreak)
+    nextLossCount  := f_afterLL(curLossStreak)
+nextTotalCount := nextWinCount + nextLossCount
+float nextWinPct  = nextTotalCount > 0 ? 100.0 * nextWinCount  / nextTotalCount : na
+float nextLossPct = nextTotalCount > 0 ? 100.0 * nextLossCount / nextTotalCount : na
+
+// ── Step 4: common W/L pattern detection (n-gram scan over non-BE sample) ──
+// Compresses consecutive runs into "kW" or "kL" tokens, then slides windows
+// of length 2, 3, 4, 5 over the token stream and counts each literal pattern.
+// Keeps top-3 most frequent AFTER filtering out degenerate single-token windows.
+
+// First: flatten sample into a token stream (runs) for pattern scanning
+var array<int> tokSign = array.new<int>()  // +1 W or -1 L per token
+var array<int> tokLen  = array.new<int>()  // length of that run
+
+// Pattern counts — parallel arrays (string pattern, int count).
+// Distinct patterns are rare in small samples, so linear scan is fine.
+var array<string> patStr = array.new<string>()
+var array<int>    patCnt = array.new<int>()
+
+int patternWindows = 0
+if showStats and barstate.islast and streak_total > 0
+    array.clear(tokSign)
+    array.clear(tokLen)
+    int curSign = 0
+    int curLen  = 0
+    for i = 0 to streak_total - 1
+        int c = array.get(sample, i)
+        if c == 0
+            continue
+        if curSign == 0
+            curSign := c
+            curLen  := 1
+        else if c == curSign
+            curLen += 1
+        else
+            array.push(tokSign, curSign)
+            array.push(tokLen,  curLen)
+            curSign := c
+            curLen  := 1
+    if curSign != 0
+        array.push(tokSign, curSign)
+        array.push(tokLen,  curLen)
+
+    // Slide windows of length 2..5 over the tokens
+    array.clear(patStr)
+    array.clear(patCnt)
+    int tN = array.size(tokSign)
+    for wlen = 2 to 5
+        if tN >= wlen
+            for s = 0 to tN - wlen
+                string p = ""
+                for k = 0 to wlen - 1
+                    int ts = array.get(tokSign, s + k)
+                    int tl = array.get(tokLen,  s + k)
+                    p := p + (p != "" ? "·" : "") + str.tostring(tl) + (ts == 1 ? "W" : "L")
+                // Increment or insert
+                int foundAt = -1
+                int pN = array.size(patStr)
+                for q = 0 to pN - 1
+                    if array.get(patStr, q) == p
+                        foundAt := q
+                        break
+                if foundAt >= 0
+                    array.set(patCnt, foundAt, array.get(patCnt, foundAt) + 1)
+                else
+                    array.push(patStr, p)
+                    array.push(patCnt, 1)
+                patternWindows += 1
+
+// Top-3 by count (linear scan — at most a couple of hundred patterns)
+var array<string> topPatStr = array.new<string>()
+var array<int>    topPatCnt = array.new<int>()
+if showStats and barstate.islast
+    array.clear(topPatStr)
+    array.clear(topPatCnt)
+    int pN = array.size(patStr)
+    for rank = 0 to 2
+        int bestIdx = -1
+        int bestCnt = -1
+        for q = 0 to pN - 1
+            int c = array.get(patCnt, q)
+            bool alreadyTaken = false
+            int topN = array.size(topPatStr)
+            for t = 0 to topN - 1
+                if array.get(topPatStr, t) == array.get(patStr, q)
+                    alreadyTaken := true
+                    break
+            if not alreadyTaken and c > bestCnt
+                bestCnt := c
+                bestIdx := q
+        if bestIdx >= 0
+            array.push(topPatStr, array.get(patStr, bestIdx))
+            array.push(topPatCnt, array.get(patCnt, bestIdx))
+
+// Most common pattern card (top #1)
+string mcPattern = array.size(topPatStr) > 0 ? array.get(topPatStr, 0) : "—"
+int    mcCount   = array.size(topPatCnt) > 0 ? array.get(topPatCnt, 0) : 0
+float  mcPct     = patternWindows > 0 and mcCount > 0 ? 100.0 * mcCount / patternWindows : na
+
+// Human-readable "what it suggests" interpretation for a pattern string
+// Simple heuristic: if pattern is mostly wins → clean streak; mostly losses →
+// choppy; alternating/mixed → back-and-forth.
+f_patternHint(string p) =>
+    int wTotal = 0
+    int lTotal = 0
+    int runs   = 0
+    // Parse "kW·kL·…" tokens
+    array<string> parts = str.split(p, "·")
+    for i2 = 0 to array.size(parts) - 1
+        string tok = array.get(parts, i2)
+        bool isW = str.contains(tok, "W")
+        // strip trailing W/L to get number
+        string numStr = str.replace_all(str.replace_all(tok, "W", ""), "L", "")
+        int n = math.round(str.tonumber(numStr))
+        if isW
+            wTotal += n
+        else
+            lTotal += n
+        runs += 1
+    string hint = runs <= 2 ? (wTotal > lTotal ? "Clean win streak" : lTotal > wTotal ? "Clean loss streak" : "Even back-and-forth") : (wTotal == lTotal ? "Choppy alternation" : wTotal > lTotal ? "Winning recovery phase" : "Losing recovery phase")
+    hint
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1302,7 +1527,10 @@ if showTable and barstate.islast
     tblSize = dashSize == "tiny" ? size.tiny : dashSize == "small" ? size.small : dashSize == "large" ? size.large : size.normal
     dotSize = dashSize == "large" ? size.normal : dashSize == "normal" ? size.small : size.tiny
 
-    var table main_table = table.new(position.top_right, 3, 11, bgcolor=baseBG, border_color=frameBG, border_width=0, frame_color=frameBG, frame_width=1)
+    // Table expanded from 11 → 25 rows to accommodate the Streak Intelligence
+    // section (rows 11-24) when no trade is active. Rows 0-10 keep their original
+    // layout: title, bias, touched, signal, system, model, and the 5 trade levels.
+    var table main_table = table.new(position.top_right, 3, 25, bgcolor=baseBG, border_color=frameBG, border_width=0, frame_color=frameBG, frame_width=1)
 
     table.cell(main_table, 0, 0, "", bgcolor=titleBG)
     table.cell(main_table, 1, 0, "DTG", text_color=valueTxt, text_size=tblSize, bgcolor=titleBG, text_halign=text.align_right)
@@ -1391,49 +1619,125 @@ if showTable and barstate.islast
         table.cell(main_table, 0, 10, "", bgcolor=baseBG)
         table.cell(main_table, 1, 10, "Lots",     text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
         table.cell(main_table, 2, 10, str.tostring(lotVal_d, isCrypto ? "#.####" : "#.##") + " " + lotUnit_d, text_color=color.new(#00E5FF, 0), text_size=tblSize, bgcolor=tradeCellBG, text_halign=text.align_center)
-    else if showStats and stats_total > 0
-        // Performance stats occupy rows 6-10 when no trade is active.
-        // Colors key to outcome: green for positive expectancy/PF>1, red otherwise.
+        // Active trade occupies rows 6-10 — clear streak intel rows 11-24 so
+        // old content from a scanning pass doesn't linger underneath.
+        table.clear(main_table, 0, 11, 2, 24)
+    else if showStats
+        // ── STREAK INTELLIGENCE panel (replaces legacy Trades/WR/Exp/PF block) ──
+        // Rows 6-10 : metric cards (streak, avg runs, common, next-likely)
+        // Row 11    : section divider + title
+        // Rows 12-19: after-streak transition table (1-4+W then 1-4+L)
+        // Rows 20-24: common-pattern section (header + top 3)
+        //
+        // Colors reuse the shared palette so nothing looks bolted on.
         color statsPosBG = color.new(#00C853, 70)
         color statsNegBG = color.new(#FF1744, 70)
         color statsNeuBG = color.new(#5A5A8F, 70)
+        color statsHdrBG = color.new(#1e1e38, 0)
 
-        // Row 6 — Total trades (scope-aware)
-        string scopeTag = statsScope == "Today" ? " (Today)" : ""
+        bool  hasSample = streak_total > 0
+        string naLabel  = "—"
+        string naHint   = "Not enough data yet"
+
+        // Row 6 — Win Streak metric card
         table.cell(main_table, 0, 6, "", bgcolor=baseBG)
-        table.cell(main_table, 1, 6, "Trades" + scopeTag, text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 6, str.tostring(stats_total), text_color=valueTxt, text_size=tblSize, bgcolor=statsNeuBG, text_halign=text.align_center)
+        table.cell(main_table, 1, 6, "Win Streak", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+        table.cell(main_table, 2, 6, curWinStreak > 0 ? "W" + str.tostring(curWinStreak) : naLabel, text_color=valueTxt, text_size=tblSize, bgcolor=curWinStreak > 0 ? statsPosBG : statsNeuBG, text_halign=text.align_center)
 
-        // Row 7 — Win rate (W+1:1 as "closes at profit or BE+")
-        color wrBG = stats_winRate >= 50 ? statsPosBG : statsNegBG
-        string wrText = na(stats_winRate) ? "—" : str.tostring(stats_winRate, "#.0") + "%"
+        // Row 7 — Loss Streak metric card
         table.cell(main_table, 0, 7, "", bgcolor=baseBG)
-        table.cell(main_table, 1, 7, "Win Rate", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 7, wrText, text_color=valueTxt, text_size=tblSize, bgcolor=wrBG, text_halign=text.align_center)
+        table.cell(main_table, 1, 7, "Loss Streak", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+        table.cell(main_table, 2, 7, curLossStreak > 0 ? "L" + str.tostring(curLossStreak) : naLabel, text_color=valueTxt, text_size=tblSize, bgcolor=curLossStreak > 0 ? statsNegBG : statsNeuBG, text_halign=text.align_center)
 
-        // Row 8 — Expectancy in R
-        color exBG = stats_expectancy > 0 ? statsPosBG : stats_expectancy < 0 ? statsNegBG : statsNeuBG
-        string exText = na(stats_expectancy) ? "—" : (stats_expectancy >= 0 ? "+" : "") + str.tostring(stats_expectancy, "#.##") + "R"
+        // Row 8 — Avg win run length
         table.cell(main_table, 0, 8, "", bgcolor=baseBG)
-        table.cell(main_table, 1, 8, "Expectancy", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 8, exText, text_color=valueTxt, text_size=tblSize, bgcolor=exBG, text_halign=text.align_center)
+        table.cell(main_table, 1, 8, "Avg Win Run", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+        table.cell(main_table, 2, 8, na(avgWinStreak) ? naLabel : str.tostring(avgWinStreak, "#.#"), text_color=valueTxt, text_size=tblSize, bgcolor=statsNeuBG, text_halign=text.align_center)
 
-        // Row 9 — Profit factor
-        color pfBG = na(stats_pf) ? statsNeuBG : stats_pf >= 1.5 ? statsPosBG : stats_pf >= 1.0 ? statsNeuBG : statsNegBG
-        string pfText = na(stats_pf) ? "—" : stats_pf >= 999 ? "∞" : str.tostring(stats_pf, "#.##")
+        // Row 9 — Avg loss run length
         table.cell(main_table, 0, 9, "", bgcolor=baseBG)
-        table.cell(main_table, 1, 9, "Profit Factor", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 9, pfText, text_color=valueTxt, text_size=tblSize, bgcolor=pfBG, text_halign=text.align_center)
+        table.cell(main_table, 1, 9, "Avg Loss Run", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+        table.cell(main_table, 2, 9, na(avgLossStreak) ? naLabel : str.tostring(avgLossStreak, "#.#"), text_color=valueTxt, text_size=tblSize, bgcolor=statsNeuBG, text_halign=text.align_center)
 
-        // Row 10 — Current streak with W/L prefix
-        color stBG = stats_streakSign > 0 ? statsPosBG : stats_streakSign < 0 ? statsNegBG : statsNeuBG
-        string stText = stats_streak == 0 ? "—" : (stats_streakSign > 0 ? "W" : "L") + str.tostring(stats_streak)
+        // Row 10 — Next-likely forecast (high prob outcome given CURRENT streak)
+        string nextLblStr = "Next Likely"
+        string nextValStr = naLabel
+        color  nextValBG  = statsNeuBG
+        if nextTotalCount >= 5
+            bool favorWin = nextWinPct >= nextLossPct
+            nextValStr := (favorWin ? str.tostring(nextWinPct, "#.0") + "% W" : str.tostring(nextLossPct, "#.0") + "% L")
+            nextValBG  := favorWin ? statsPosBG : statsNegBG
         table.cell(main_table, 0, 10, "", bgcolor=baseBG)
-        table.cell(main_table, 1, 10, "Streak", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 10, stText, text_color=valueTxt, text_size=tblSize, bgcolor=stBG, text_halign=text.align_center)
+        table.cell(main_table, 1, 10, nextLblStr, text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+        table.cell(main_table, 2, 10, nextValStr, text_color=valueTxt, text_size=tblSize, bgcolor=nextValBG, text_halign=text.align_center)
+
+        // Row 11 — Section divider + sample-size indicator
+        string sampleTag = hasSample ? str.tostring(streak_total) + " trades" : "awaiting data"
+        table.cell(main_table, 0, 11, "", bgcolor=statsHdrBG)
+        table.cell(main_table, 1, 11, "STREAK INTEL", text_color=titleTxt, text_size=tblSize, bgcolor=statsHdrBG, text_halign=text.align_right)
+        table.cell(main_table, 2, 11, sampleTag, text_color=titleTxt, text_size=tblSize, bgcolor=statsHdrBG, text_halign=text.align_center)
+
+        // ── After-streak transition table (rows 12-19) ──
+        // Column 0: streak tag, Col 1: next W% / L%, Col 2: N · confidence
+        // Row 12 — table header
+        table.cell(main_table, 0, 12, "After", text_color=titleTxt, text_size=tblSize, bgcolor=statsHdrBG, text_halign=text.align_center)
+        table.cell(main_table, 1, 12, "Next W / L", text_color=titleTxt, text_size=tblSize, bgcolor=statsHdrBG, text_halign=text.align_center)
+        table.cell(main_table, 2, 12, "N · Conf", text_color=titleTxt, text_size=tblSize, bgcolor=statsHdrBG, text_halign=text.align_center)
+
+        // Helper: render one after-streak row given the two counts + row index + tag
+        // (Inlined per row so each cell can take its own styling.)
+        for kk = 1 to 4
+            int row  = 12 + kk
+            // WIN side, row 13-16
+            int winN = f_afterWW(kk) + f_afterWL(kk)
+            int winWc = f_afterWW(kk)
+            string winTag = kk == 4 ? "4+W" : str.tostring(kk) + "W"
+            color  winTagBG = color.new(#00C853, 60)
+            string winNextStr = winN >= 3 ? str.tostring(100.0 * winWc / winN, "#.0") + "% / " + str.tostring(100.0 * (winN - winWc) / winN, "#.0") + "%" : naHint
+            color  winNextBG  = winN >= 3 ? (winWc > (winN - winWc) ? statsPosBG : statsNegBG) : statsNeuBG
+            string winStatStr = str.tostring(winN) + " · " + f_confLabel(winN)
+            color  winStatBG  = color.new(f_confColor(winN), 60)
+            table.cell(main_table, 0, row, winTag, text_color=valueTxt, text_size=tblSize, bgcolor=winTagBG, text_halign=text.align_center)
+            table.cell(main_table, 1, row, winNextStr, text_color=valueTxt, text_size=tblSize, bgcolor=winNextBG, text_halign=text.align_center)
+            table.cell(main_table, 2, row, winStatStr, text_color=valueTxt, text_size=tblSize, bgcolor=winStatBG, text_halign=text.align_center)
+
+        // LOSS side, rows 17-20
+        for kk = 1 to 4
+            int row  = 16 + kk
+            int lossN = f_afterLW(kk) + f_afterLL(kk)
+            int lossWc = f_afterLW(kk)
+            string lossTag = kk == 4 ? "4+L" : str.tostring(kk) + "L"
+            color  lossTagBG = color.new(#FF1744, 60)
+            string lossNextStr = lossN >= 3 ? str.tostring(100.0 * lossWc / lossN, "#.0") + "% / " + str.tostring(100.0 * (lossN - lossWc) / lossN, "#.0") + "%" : naHint
+            color  lossNextBG  = lossN >= 3 ? (lossWc > (lossN - lossWc) ? statsPosBG : statsNegBG) : statsNeuBG
+            string lossStatStr = str.tostring(lossN) + " · " + f_confLabel(lossN)
+            color  lossStatBG  = color.new(f_confColor(lossN), 60)
+            table.cell(main_table, 0, row, lossTag, text_color=valueTxt, text_size=tblSize, bgcolor=lossTagBG, text_halign=text.align_center)
+            table.cell(main_table, 1, row, lossNextStr, text_color=valueTxt, text_size=tblSize, bgcolor=lossNextBG, text_halign=text.align_center)
+            table.cell(main_table, 2, row, lossStatStr, text_color=valueTxt, text_size=tblSize, bgcolor=lossStatBG, text_halign=text.align_center)
+
+        // ── Common patterns section (rows 21-24) ──
+        // Row 21 — header
+        table.cell(main_table, 0, 21, "Pattern", text_color=titleTxt, text_size=tblSize, bgcolor=statsHdrBG, text_halign=text.align_center)
+        table.cell(main_table, 1, 21, "Count", text_color=titleTxt, text_size=tblSize, bgcolor=statsHdrBG, text_halign=text.align_center)
+        table.cell(main_table, 2, 21, "Shape", text_color=titleTxt, text_size=tblSize, bgcolor=statsHdrBG, text_halign=text.align_center)
+
+        // Rows 22-24 — top-3 patterns
+        for rank = 0 to 2
+            int row = 22 + rank
+            bool hasRow = rank < array.size(topPatStr)
+            string pStr = hasRow ? array.get(topPatStr, rank) : naLabel
+            int    pCnt = hasRow ? array.get(topPatCnt, rank) : 0
+            float  pPct = hasRow and patternWindows > 0 ? 100.0 * pCnt / patternWindows : na
+            string pCntCell = hasRow ? str.tostring(pCnt) + (na(pPct) ? "" : " · " + str.tostring(pPct, "#.0") + "%") : naLabel
+            string pHint = hasRow ? f_patternHint(pStr) : naHint
+            color  pTagBG = hasRow ? color.new(#3a3a5c, 60) : statsNeuBG
+            table.cell(main_table, 0, row, pStr,     text_color=valueTxt, text_size=tblSize, bgcolor=pTagBG, text_halign=text.align_center)
+            table.cell(main_table, 1, row, pCntCell, text_color=valueTxt, text_size=tblSize, bgcolor=statsNeuBG, text_halign=text.align_center)
+            table.cell(main_table, 2, row, pHint,    text_color=valueTxt, text_size=tblSize, bgcolor=statsNeuBG, text_halign=text.align_center)
     else
-        // No active trade and no stats to show — blank rows 6-10 (Model row 5 stays)
-        table.clear(main_table, 0, 6, 2, 10)
+        // No active trade and streak intelligence off — blank rows 6-24.
+        table.clear(main_table, 0, 6, 2, 24)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §19  END
