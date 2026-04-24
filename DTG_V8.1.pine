@@ -1211,13 +1211,14 @@ int   streak_beCount = 0
 if showStats and barstate.islast
     array.clear(sample)
     int bufLen = array.size(trades)
-    int start  = math.max(0, bufLen - streak_sampleN)
-    for i = start to bufLen - 1
-        TradeRecord r = array.get(trades, i)
-        int cat = r.rMultiple > 0 ? 1 : r.rMultiple < 0 ? -1 : 0
-        if cat == 0
-            streak_beCount += 1
-        array.push(sample, cat)
+    if bufLen > 0
+        int start  = math.max(0, bufLen - streak_sampleN)
+        for i = start to bufLen - 1
+            TradeRecord r = array.get(trades, i)
+            int cat = r.rMultiple > 0 ? 1 : r.rMultiple < 0 ? -1 : 0
+            if cat == 0
+                streak_beCount += 1
+            array.push(sample, cat)
 
 int streak_total = array.size(sample)
 
