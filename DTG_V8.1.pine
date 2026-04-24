@@ -1522,6 +1522,12 @@ color step2Clr  = stepTwoValid and anyDashTouched ? color.new(#00E676, 0) : colo
 bool  showTrade = trade.status == "Active" or trade.status == "Triggered"
 color step3Clr  = showTrade ? color.new(#00E676, 0) : color.new(#3a3a5c, 0)
 
+// Typography constants — hoisted to global scope so §18 (main) AND §18b
+// (streak intel) can share the same sizing without redeclaring. Main table
+// usage stays identical; streak table now compiles cleanly.
+tblSize = dashSize == "tiny" ? size.tiny : dashSize == "small" ? size.small : dashSize == "large" ? size.large : size.normal
+dotSize = dashSize == "large" ? size.normal : dashSize == "normal" ? size.small : size.tiny
+
 // Dashboard build is confined to the last bar — all historical bars would
 // paint identical values that are immediately overwritten, so doing it once
 // on `islast` is a big runtime saver with zero visual change.
@@ -1534,9 +1540,6 @@ if showTable and barstate.islast
     color dividerBG  = color.new(#1e1e38, 0)
     color frameBG    = color.new(#1e1e38, 0)
     color dotBG      = color.new(#111122, 0)
-
-    tblSize = dashSize == "tiny" ? size.tiny : dashSize == "small" ? size.small : dashSize == "large" ? size.large : size.normal
-    dotSize = dashSize == "large" ? size.normal : dashSize == "normal" ? size.small : size.tiny
 
     // Main table layout (3 columns × 12 rows):
     //   Row 0    — Title bar
