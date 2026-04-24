@@ -41,6 +41,7 @@ bear_fill     = input.color(color.new(color.red, 80),   "Bear Fill",  inline="V3
 bull_border   = input.color(color.green, "Bull Border", inline="V4", group=grpVis)
 bear_border   = input.color(color.red,   "Bear Border", inline="V4", group=grpVis)
 line_width    = input.int(1, "Zone Mid Line", minval=1, maxval=6, inline="V5", group=grpVis)
+showBiasCountdown = input.bool(true, "Bias Recalc Countdown", group=grpVis, tooltip="Show countdown to the next 4H candle close — the earliest moment overall bias can recalculate. Appears as a row at the bottom of the main dashboard.")
 
 // ── RISK ──
 grpRisk       = "Risk Management"
@@ -69,7 +70,8 @@ em4_minAtrPct  = input.float(40.0, "Min Candle Size (% of ATR)", minval=0, step=
 
 // ── STATISTICS / STREAK INTELLIGENCE ──
 grpStats       = "Streak Intelligence"
-showStats      = input.bool(true, "Show Streak Intelligence", group=grpStats, tooltip="Show current streak metrics, after-streak transition probabilities, and common win/loss pattern analysis.")
+showStats      = input.bool(true, "Show Streak Intelligence", group=grpStats, tooltip="Master on/off for the Streak Intelligence panel. Rendered as its own separate table (position selectable below).")
+streakPos      = input.string("Bottom Right", "Table Position", options=["Top Left", "Top Right", "Middle Left", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group=grpStats, tooltip="Where the Streak Intelligence table anchors on the chart.")
 streakSample   = input.string("200", "Analyze Last N Trades", options=["200", "300", "500", "All"], group=grpStats, tooltip="Sample size for streak analysis. Uses only completed trades in the buffer (capped by Max Trades Tracked).")
 statsMax       = input.int(500, "Max Trades Tracked", minval=50, maxval=1000, group=grpStats, tooltip="Ring buffer capacity. Oldest trade is dropped once full. Must be >= the Analyze Last N Trades value for the full sample to be available.")
 
@@ -1536,10 +1538,15 @@ if showTable and barstate.islast
     tblSize = dashSize == "tiny" ? size.tiny : dashSize == "small" ? size.small : dashSize == "large" ? size.large : size.normal
     dotSize = dashSize == "large" ? size.normal : dashSize == "normal" ? size.small : size.tiny
 
-    // Table expanded from 11 → 25 rows to accommodate the Streak Intelligence
-    // section (rows 11-24) when no trade is active. Rows 0-10 keep their original
-    // layout: title, bias, touched, signal, system, model, and the 5 trade levels.
-    var table main_table = table.new(position.top_right, 3, 25, bgcolor=baseBG, border_color=frameBG, border_width=0, frame_color=frameBG, frame_width=1)
+    // Main table layout (3 columns × 12 rows):
+    //   Row 0    — Title bar
+    //   Row 1-3  — Bias / Touched / Signal (the 3-step dots)
+    //   Row 4    — System state divider
+    //   Row 5    — Model + Confluence
+    //   Row 6-10 — Trade levels (Entry/SL/TP1/TP2/Lots) when trade active
+    //   Row 11   — Bias Recalc countdown (optional, via showBiasCountdown)
+    // Streak Intelligence lives in its own separate table (see below §18b).
+    var table main_table = table.new(position.top_right, 3, 12, bgcolor=baseBG, border_color=frameBG, border_width=0, frame_color=frameBG, frame_width=1)
 
     table.cell(main_table, 0, 0, "", bgcolor=titleBG)
     table.cell(main_table, 1, 0, "DTG", text_color=valueTxt, text_size=tblSize, bgcolor=titleBG, text_halign=text.align_right)
@@ -1628,125 +1635,145 @@ if showTable and barstate.islast
         table.cell(main_table, 0, 10, "", bgcolor=baseBG)
         table.cell(main_table, 1, 10, "Lots",     text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
         table.cell(main_table, 2, 10, str.tostring(lotVal_d, isCrypto ? "#.####" : "#.##") + " " + lotUnit_d, text_color=color.new(#00E5FF, 0), text_size=tblSize, bgcolor=tradeCellBG, text_halign=text.align_center)
-        // Active trade occupies rows 6-10 — clear streak intel rows 11-24 so
-        // old content from a scanning pass doesn't linger underneath.
-        table.clear(main_table, 0, 11, 2, 24)
-    else if showStats
-        // ── STREAK INTELLIGENCE panel (replaces legacy Trades/WR/Exp/PF block) ──
-        // Rows 6-10 : metric cards (streak, avg runs, common, next-likely)
-        // Row 11    : section divider + title
-        // Rows 12-19: after-streak transition table (1-4+W then 1-4+L)
-        // Rows 20-24: common-pattern section (header + top 3)
-        //
-        // Colors reuse the shared palette so nothing looks bolted on.
-        color statsPosBG = color.new(#00C853, 70)
-        color statsNegBG = color.new(#FF1744, 70)
-        color statsNeuBG = color.new(#5A5A8F, 70)
-        color statsHdrBG = color.new(#1e1e38, 0)
-
-        bool  hasSample = streak_total > 0
-        string naLabel  = "—"
-        string naHint   = "Not enough data yet"
-
-        // Row 6 — Win Streak metric card
-        table.cell(main_table, 0, 6, "", bgcolor=baseBG)
-        table.cell(main_table, 1, 6, "Win Streak", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 6, curWinStreak > 0 ? "W" + str.tostring(curWinStreak) : naLabel, text_color=valueTxt, text_size=tblSize, bgcolor=curWinStreak > 0 ? statsPosBG : statsNeuBG, text_halign=text.align_center)
-
-        // Row 7 — Loss Streak metric card
-        table.cell(main_table, 0, 7, "", bgcolor=baseBG)
-        table.cell(main_table, 1, 7, "Loss Streak", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 7, curLossStreak > 0 ? "L" + str.tostring(curLossStreak) : naLabel, text_color=valueTxt, text_size=tblSize, bgcolor=curLossStreak > 0 ? statsNegBG : statsNeuBG, text_halign=text.align_center)
-
-        // Row 8 — Avg win run length
-        table.cell(main_table, 0, 8, "", bgcolor=baseBG)
-        table.cell(main_table, 1, 8, "Avg Win Run", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 8, na(avgWinStreak) ? naLabel : str.tostring(avgWinStreak, "#.#"), text_color=valueTxt, text_size=tblSize, bgcolor=statsNeuBG, text_halign=text.align_center)
-
-        // Row 9 — Avg loss run length
-        table.cell(main_table, 0, 9, "", bgcolor=baseBG)
-        table.cell(main_table, 1, 9, "Avg Loss Run", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 9, na(avgLossStreak) ? naLabel : str.tostring(avgLossStreak, "#.#"), text_color=valueTxt, text_size=tblSize, bgcolor=statsNeuBG, text_halign=text.align_center)
-
-        // Row 10 — Next-likely forecast (high prob outcome given CURRENT streak)
-        string nextLblStr = "Next Likely"
-        string nextValStr = naLabel
-        color  nextValBG  = statsNeuBG
-        if nextTotalCount >= 5
-            bool favorWin = nextWinPct >= nextLossPct
-            nextValStr := (favorWin ? str.tostring(nextWinPct, "#.0") + "% W" : str.tostring(nextLossPct, "#.0") + "% L")
-            nextValBG  := favorWin ? statsPosBG : statsNegBG
-        table.cell(main_table, 0, 10, "", bgcolor=baseBG)
-        table.cell(main_table, 1, 10, nextLblStr, text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 10, nextValStr, text_color=valueTxt, text_size=tblSize, bgcolor=nextValBG, text_halign=text.align_center)
-
-        // Row 11 — Section divider + sample-size indicator
-        string sampleTag = hasSample ? str.tostring(streak_total) + " trades" : "awaiting data"
-        table.cell(main_table, 0, 11, "", bgcolor=statsHdrBG)
-        table.cell(main_table, 1, 11, "STREAK INTEL", text_color=titleTxt, text_size=tblSize, bgcolor=statsHdrBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 11, sampleTag, text_color=titleTxt, text_size=tblSize, bgcolor=statsHdrBG, text_halign=text.align_center)
-
-        // ── After-streak transition table (rows 12-19) ──
-        // Column 0: streak tag, Col 1: next W% / L%, Col 2: N · confidence
-        // Row 12 — table header
-        table.cell(main_table, 0, 12, "After", text_color=titleTxt, text_size=tblSize, bgcolor=statsHdrBG, text_halign=text.align_center)
-        table.cell(main_table, 1, 12, "Next W / L", text_color=titleTxt, text_size=tblSize, bgcolor=statsHdrBG, text_halign=text.align_center)
-        table.cell(main_table, 2, 12, "N · Conf", text_color=titleTxt, text_size=tblSize, bgcolor=statsHdrBG, text_halign=text.align_center)
-
-        // Helper: render one after-streak row given the two counts + row index + tag
-        // (Inlined per row so each cell can take its own styling.)
-        for kk = 1 to 4
-            int row  = 12 + kk
-            // WIN side, row 13-16
-            int winN = f_afterWW(kk) + f_afterWL(kk)
-            int winWc = f_afterWW(kk)
-            string winTag = kk == 4 ? "4+W" : str.tostring(kk) + "W"
-            color  winTagBG = color.new(#00C853, 60)
-            string winNextStr = winN >= 3 ? str.tostring(100.0 * winWc / winN, "#.0") + "% / " + str.tostring(100.0 * (winN - winWc) / winN, "#.0") + "%" : naHint
-            color  winNextBG  = winN >= 3 ? (winWc > (winN - winWc) ? statsPosBG : statsNegBG) : statsNeuBG
-            string winStatStr = str.tostring(winN) + " · " + f_confLabel(winN)
-            color  winStatBG  = color.new(f_confColor(winN), 60)
-            table.cell(main_table, 0, row, winTag, text_color=valueTxt, text_size=tblSize, bgcolor=winTagBG, text_halign=text.align_center)
-            table.cell(main_table, 1, row, winNextStr, text_color=valueTxt, text_size=tblSize, bgcolor=winNextBG, text_halign=text.align_center)
-            table.cell(main_table, 2, row, winStatStr, text_color=valueTxt, text_size=tblSize, bgcolor=winStatBG, text_halign=text.align_center)
-
-        // LOSS side, rows 17-20
-        for kk = 1 to 4
-            int row  = 16 + kk
-            int lossN = f_afterLW(kk) + f_afterLL(kk)
-            int lossWc = f_afterLW(kk)
-            string lossTag = kk == 4 ? "4+L" : str.tostring(kk) + "L"
-            color  lossTagBG = color.new(#FF1744, 60)
-            string lossNextStr = lossN >= 3 ? str.tostring(100.0 * lossWc / lossN, "#.0") + "% / " + str.tostring(100.0 * (lossN - lossWc) / lossN, "#.0") + "%" : naHint
-            color  lossNextBG  = lossN >= 3 ? (lossWc > (lossN - lossWc) ? statsPosBG : statsNegBG) : statsNeuBG
-            string lossStatStr = str.tostring(lossN) + " · " + f_confLabel(lossN)
-            color  lossStatBG  = color.new(f_confColor(lossN), 60)
-            table.cell(main_table, 0, row, lossTag, text_color=valueTxt, text_size=tblSize, bgcolor=lossTagBG, text_halign=text.align_center)
-            table.cell(main_table, 1, row, lossNextStr, text_color=valueTxt, text_size=tblSize, bgcolor=lossNextBG, text_halign=text.align_center)
-            table.cell(main_table, 2, row, lossStatStr, text_color=valueTxt, text_size=tblSize, bgcolor=lossStatBG, text_halign=text.align_center)
-
-        // ── Common patterns section (rows 21-24) ──
-        // Row 21 — header
-        table.cell(main_table, 0, 21, "Pattern", text_color=titleTxt, text_size=tblSize, bgcolor=statsHdrBG, text_halign=text.align_center)
-        table.cell(main_table, 1, 21, "Count", text_color=titleTxt, text_size=tblSize, bgcolor=statsHdrBG, text_halign=text.align_center)
-        table.cell(main_table, 2, 21, "Shape", text_color=titleTxt, text_size=tblSize, bgcolor=statsHdrBG, text_halign=text.align_center)
-
-        // Rows 22-24 — top-3 patterns
-        for rank = 0 to 2
-            int row = 22 + rank
-            bool hasRow = rank < array.size(topPatStr)
-            string pStr = hasRow ? array.get(topPatStr, rank) : naLabel
-            int    pCnt = hasRow ? array.get(topPatCnt, rank) : 0
-            float  pPct = hasRow and patternWindows > 0 ? 100.0 * pCnt / patternWindows : na
-            string pCntCell = hasRow ? str.tostring(pCnt) + (na(pPct) ? "" : " · " + str.tostring(pPct, "#.0") + "%") : naLabel
-            string pHint = hasRow ? f_patternHint(pStr) : naHint
-            color  pTagBG = hasRow ? color.new(#3a3a5c, 60) : statsNeuBG
-            table.cell(main_table, 0, row, pStr,     text_color=valueTxt, text_size=tblSize, bgcolor=pTagBG, text_halign=text.align_center)
-            table.cell(main_table, 1, row, pCntCell, text_color=valueTxt, text_size=tblSize, bgcolor=statsNeuBG, text_halign=text.align_center)
-            table.cell(main_table, 2, row, pHint,    text_color=valueTxt, text_size=tblSize, bgcolor=statsNeuBG, text_halign=text.align_center)
     else
-        // No active trade and streak intelligence off — blank rows 6-24.
-        table.clear(main_table, 0, 6, 2, 24)
+        // No active trade — blank trade-level rows 6-10
+        table.clear(main_table, 0, 6, 2, 10)
+
+    // ── Row 11 — Bias Recalc countdown ──
+    // Overall bias is computed from completed 4H/6H/8H/12H/D/W candles. The earliest
+    // moment it can change is when the currently-forming 4H candle closes, so we
+    // count down to time_close("240"). Format flips automatically: >1h shows HH:MM,
+    // otherwise MM:SS. Clears if the input is off or the value can't be computed.
+    if showBiasCountdown
+        int countdownMs = time_close("240") - time
+        int ccSec   = math.max(0, int(countdownMs / 1000))
+        int ccHr    = ccSec / 3600
+        int ccMin   = (ccSec % 3600) / 60
+        int ccSs    = ccSec % 60
+        string ccTxt = ccHr > 0 ? str.tostring(ccHr) + "h " + (ccMin < 10 ? "0" : "") + str.tostring(ccMin) + "m" : str.tostring(ccMin) + ":" + (ccSs < 10 ? "0" : "") + str.tostring(ccSs)
+        color  ccBG  = ccHr == 0 and ccMin < 15 ? color.new(#00E5FF, 60) : color.new(#5A5A8F, 70)
+        table.cell(main_table, 0, 11, "", bgcolor=baseBG)
+        table.cell(main_table, 1, 11, "Bias in", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+        table.cell(main_table, 2, 11, ccTxt,     text_color=valueTxt, text_size=tblSize, bgcolor=ccBG, text_halign=text.align_center)
+    else
+        table.clear(main_table, 0, 11, 2, 11)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §18b  STREAK INTELLIGENCE TABLE (separate from main dashboard)
+// ─────────────────────────────────────────────────────────────────────────────
+// Lives in its own table so the user can position it independently and toggle
+// it without affecting the main dashboard. Controlled by:
+//   showStats  — master on/off
+//   streakPos  — anchor position
+// Uses the same palette + typography as the main table so it reads as a
+// matching companion panel rather than something bolted on.
+
+if showStats and barstate.islast
+    // Map the position input to Pine's position enum. `barstate.islast` creates
+    // the table fresh each run so position changes take effect immediately.
+    var table streak_table = table.new(streakPos == "Top Left" ? position.top_left : streakPos == "Top Right" ? position.top_right : streakPos == "Middle Left" ? position.middle_left : streakPos == "Middle Right" ? position.middle_right : streakPos == "Bottom Left" ? position.bottom_left : streakPos == "Bottom Center" ? position.bottom_center : position.bottom_right, 3, 19, bgcolor=color.new(#111122, 0), border_color=color.new(#1e1e38, 0), border_width=0, frame_color=color.new(#1e1e38, 0), frame_width=1)
+
+    color s_baseBG    = color.new(#111122, 0)
+    color s_titleBG   = color.new(#0a0a1a, 0)
+    color s_titleTxt  = color.new(#8899bb, 0)
+    color s_labelTxt  = color.new(#7a7a9e, 0)
+    color s_valueTxt  = color.new(#e8e8f0, 0)
+    color s_headerBG  = color.new(#1e1e38, 0)
+    color statsPosBG  = color.new(#00C853, 70)
+    color statsNegBG  = color.new(#FF1744, 70)
+    color statsNeuBG  = color.new(#5A5A8F, 70)
+
+    string naLabel = "—"
+    string naHint  = "Not enough data yet"
+    bool hasSample = streak_total > 0
+
+    // Row 0 — Title bar with sample-size indicator
+    string sampleTag = hasSample ? str.tostring(streak_total) + " trades" : "awaiting data"
+    table.cell(streak_table, 0, 0, "", bgcolor=s_titleBG)
+    table.cell(streak_table, 1, 0, "STREAK INTEL", text_color=s_valueTxt, text_size=tblSize, bgcolor=s_titleBG, text_halign=text.align_right)
+    table.cell(streak_table, 2, 0, sampleTag,      text_color=s_titleTxt, text_size=tblSize, bgcolor=s_titleBG, text_halign=text.align_center)
+
+    // Rows 1-5 — Metric cards (Win/Loss streaks, avg runs, next likely)
+    table.cell(streak_table, 0, 1, "", bgcolor=s_baseBG)
+    table.cell(streak_table, 1, 1, "Win Streak", text_color=s_labelTxt, text_size=tblSize, bgcolor=s_baseBG, text_halign=text.align_right)
+    table.cell(streak_table, 2, 1, curWinStreak > 0 ? "W" + str.tostring(curWinStreak) : naLabel, text_color=s_valueTxt, text_size=tblSize, bgcolor=curWinStreak > 0 ? statsPosBG : statsNeuBG, text_halign=text.align_center)
+
+    table.cell(streak_table, 0, 2, "", bgcolor=s_baseBG)
+    table.cell(streak_table, 1, 2, "Loss Streak", text_color=s_labelTxt, text_size=tblSize, bgcolor=s_baseBG, text_halign=text.align_right)
+    table.cell(streak_table, 2, 2, curLossStreak > 0 ? "L" + str.tostring(curLossStreak) : naLabel, text_color=s_valueTxt, text_size=tblSize, bgcolor=curLossStreak > 0 ? statsNegBG : statsNeuBG, text_halign=text.align_center)
+
+    table.cell(streak_table, 0, 3, "", bgcolor=s_baseBG)
+    table.cell(streak_table, 1, 3, "Avg Win Run", text_color=s_labelTxt, text_size=tblSize, bgcolor=s_baseBG, text_halign=text.align_right)
+    table.cell(streak_table, 2, 3, na(avgWinStreak) ? naLabel : str.tostring(avgWinStreak, "#.#"), text_color=s_valueTxt, text_size=tblSize, bgcolor=statsNeuBG, text_halign=text.align_center)
+
+    table.cell(streak_table, 0, 4, "", bgcolor=s_baseBG)
+    table.cell(streak_table, 1, 4, "Avg Loss Run", text_color=s_labelTxt, text_size=tblSize, bgcolor=s_baseBG, text_halign=text.align_right)
+    table.cell(streak_table, 2, 4, na(avgLossStreak) ? naLabel : str.tostring(avgLossStreak, "#.#"), text_color=s_valueTxt, text_size=tblSize, bgcolor=statsNeuBG, text_halign=text.align_center)
+
+    string nextValStr = naLabel
+    color  nextValBG  = statsNeuBG
+    if nextTotalCount >= 5
+        bool favorWin = nextWinPct >= nextLossPct
+        nextValStr := favorWin ? str.tostring(nextWinPct, "#.0") + "% W" : str.tostring(nextLossPct, "#.0") + "% L"
+        nextValBG  := favorWin ? statsPosBG : statsNegBG
+    table.cell(streak_table, 0, 5, "", bgcolor=s_baseBG)
+    table.cell(streak_table, 1, 5, "Next Likely", text_color=s_labelTxt, text_size=tblSize, bgcolor=s_baseBG, text_halign=text.align_right)
+    table.cell(streak_table, 2, 5, nextValStr,    text_color=s_valueTxt, text_size=tblSize, bgcolor=nextValBG, text_halign=text.align_center)
+
+    // Row 6 — After-streak table header
+    table.cell(streak_table, 0, 6, "After",      text_color=s_titleTxt, text_size=tblSize, bgcolor=s_headerBG, text_halign=text.align_center)
+    table.cell(streak_table, 1, 6, "Next W / L", text_color=s_titleTxt, text_size=tblSize, bgcolor=s_headerBG, text_halign=text.align_center)
+    table.cell(streak_table, 2, 6, "N · Conf",   text_color=s_titleTxt, text_size=tblSize, bgcolor=s_headerBG, text_halign=text.align_center)
+
+    // Rows 7-10 — After-win buckets
+    for kk = 1 to 4
+        int row  = 6 + kk
+        int winN = f_afterWW(kk) + f_afterWL(kk)
+        int winWc = f_afterWW(kk)
+        string winTag = kk == 4 ? "4+W" : str.tostring(kk) + "W"
+        color  winTagBG = color.new(#00C853, 60)
+        string winNextStr = winN >= 3 ? str.tostring(100.0 * winWc / winN, "#.0") + "% / " + str.tostring(100.0 * (winN - winWc) / winN, "#.0") + "%" : naHint
+        color  winNextBG  = winN >= 3 ? (winWc > (winN - winWc) ? statsPosBG : statsNegBG) : statsNeuBG
+        string winStatStr = str.tostring(winN) + " · " + f_confLabel(winN)
+        color  winStatBG  = color.new(f_confColor(winN), 60)
+        table.cell(streak_table, 0, row, winTag,     text_color=s_valueTxt, text_size=tblSize, bgcolor=winTagBG,  text_halign=text.align_center)
+        table.cell(streak_table, 1, row, winNextStr, text_color=s_valueTxt, text_size=tblSize, bgcolor=winNextBG, text_halign=text.align_center)
+        table.cell(streak_table, 2, row, winStatStr, text_color=s_valueTxt, text_size=tblSize, bgcolor=winStatBG, text_halign=text.align_center)
+
+    // Rows 11-14 — After-loss buckets
+    for kk = 1 to 4
+        int row  = 10 + kk
+        int lossN = f_afterLW(kk) + f_afterLL(kk)
+        int lossWc = f_afterLW(kk)
+        string lossTag = kk == 4 ? "4+L" : str.tostring(kk) + "L"
+        color  lossTagBG = color.new(#FF1744, 60)
+        string lossNextStr = lossN >= 3 ? str.tostring(100.0 * lossWc / lossN, "#.0") + "% / " + str.tostring(100.0 * (lossN - lossWc) / lossN, "#.0") + "%" : naHint
+        color  lossNextBG  = lossN >= 3 ? (lossWc > (lossN - lossWc) ? statsPosBG : statsNegBG) : statsNeuBG
+        string lossStatStr = str.tostring(lossN) + " · " + f_confLabel(lossN)
+        color  lossStatBG  = color.new(f_confColor(lossN), 60)
+        table.cell(streak_table, 0, row, lossTag,     text_color=s_valueTxt, text_size=tblSize, bgcolor=lossTagBG,  text_halign=text.align_center)
+        table.cell(streak_table, 1, row, lossNextStr, text_color=s_valueTxt, text_size=tblSize, bgcolor=lossNextBG, text_halign=text.align_center)
+        table.cell(streak_table, 2, row, lossStatStr, text_color=s_valueTxt, text_size=tblSize, bgcolor=lossStatBG, text_halign=text.align_center)
+
+    // Row 15 — Common-pattern header
+    table.cell(streak_table, 0, 15, "Pattern",   text_color=s_titleTxt, text_size=tblSize, bgcolor=s_headerBG, text_halign=text.align_center)
+    table.cell(streak_table, 1, 15, "Count · %", text_color=s_titleTxt, text_size=tblSize, bgcolor=s_headerBG, text_halign=text.align_center)
+    table.cell(streak_table, 2, 15, "Shape",     text_color=s_titleTxt, text_size=tblSize, bgcolor=s_headerBG, text_halign=text.align_center)
+
+    // Rows 16-18 — Top-3 common patterns
+    for rank = 0 to 2
+        int row = 16 + rank
+        bool hasRow = rank < array.size(topPatStr)
+        string pStr = hasRow ? array.get(topPatStr, rank) : naLabel
+        int    pCnt = hasRow ? array.get(topPatCnt, rank) : 0
+        float  pPct = hasRow and patternWindows > 0 ? 100.0 * pCnt / patternWindows : na
+        string pCntCell = hasRow ? str.tostring(pCnt) + (na(pPct) ? "" : " · " + str.tostring(pPct, "#.0") + "%") : naLabel
+        string pHint = hasRow ? f_patternHint(pStr) : naHint
+        color  pTagBG = hasRow ? color.new(#3a3a5c, 60) : statsNeuBG
+        table.cell(streak_table, 0, row, pStr,     text_color=s_valueTxt, text_size=tblSize, bgcolor=pTagBG,     text_halign=text.align_center)
+        table.cell(streak_table, 1, row, pCntCell, text_color=s_valueTxt, text_size=tblSize, bgcolor=statsNeuBG, text_halign=text.align_center)
+        table.cell(streak_table, 2, row, pHint,    text_color=s_valueTxt, text_size=tblSize, bgcolor=statsNeuBG, text_halign=text.align_center)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §19  END
