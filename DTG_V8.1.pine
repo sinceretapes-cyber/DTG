@@ -1420,10 +1420,11 @@ if showStats and barstate.islast and streak_total > 0
                 // Increment or insert
                 int foundAt = -1
                 int pN = array.size(patStr)
-                for q = 0 to pN - 1
-                    if array.get(patStr, q) == p
-                        foundAt := q
-                        break
+                if pN > 0
+                    for q = 0 to pN - 1
+                        if array.get(patStr, q) == p
+                            foundAt := q
+                            break
                 if foundAt >= 0
                     array.set(patCnt, foundAt, array.get(patCnt, foundAt) + 1)
                 else
@@ -1438,23 +1439,28 @@ if showStats and barstate.islast
     array.clear(topPatStr)
     array.clear(topPatCnt)
     int pN = array.size(patStr)
-    for rank = 0 to 2
-        int bestIdx = -1
-        int bestCnt = -1
-        for q = 0 to pN - 1
-            int c = array.get(patCnt, q)
-            bool alreadyTaken = false
-            int topN = array.size(topPatStr)
-            for t = 0 to topN - 1
-                if array.get(topPatStr, t) == array.get(patStr, q)
-                    alreadyTaken := true
-                    break
-            if not alreadyTaken and c > bestCnt
-                bestCnt := c
-                bestIdx := q
-        if bestIdx >= 0
-            array.push(topPatStr, array.get(patStr, bestIdx))
-            array.push(topPatCnt, array.get(patCnt, bestIdx))
+    // Only attempt top-3 selection if we actually have patterns. Pine v6
+    // treats 'for q = 0 to -1' as a descending range (runs once with q=0)
+    // which would crash on the empty-patStr case.
+    if pN > 0
+        for rank = 0 to 2
+            int bestIdx = -1
+            int bestCnt = -1
+            for q = 0 to pN - 1
+                int c = array.get(patCnt, q)
+                bool alreadyTaken = false
+                int topN = array.size(topPatStr)
+                if topN > 0
+                    for t = 0 to topN - 1
+                        if array.get(topPatStr, t) == array.get(patStr, q)
+                            alreadyTaken := true
+                            break
+                if not alreadyTaken and c > bestCnt
+                    bestCnt := c
+                    bestIdx := q
+            if bestIdx >= 0
+                array.push(topPatStr, array.get(patStr, bestIdx))
+                array.push(topPatCnt, array.get(patCnt, bestIdx))
 
 // Most common pattern card (top #1)
 string mcPattern = array.size(topPatStr) > 0 ? array.get(topPatStr, 0) : "—"
@@ -1470,18 +1476,20 @@ f_patternHint(string p) =>
     int runs   = 0
     // Parse "kW·kL·…" tokens
     array<string> parts = str.split(p, "·")
-    for i2 = 0 to array.size(parts) - 1
-        string tok = array.get(parts, i2)
-        bool isW = str.contains(tok, "W")
-        // strip trailing W/L to get number
-        string numStr = str.replace_all(str.replace_all(tok, "W", ""), "L", "")
-        int n = math.round(str.tonumber(numStr))
-        if isW
-            wTotal += n
-        else
-            lTotal += n
-        runs += 1
-    string hint = runs <= 2 ? (wTotal > lTotal ? "Clean win streak" : lTotal > wTotal ? "Clean loss streak" : "Even back-and-forth") : (wTotal == lTotal ? "Choppy alternation" : wTotal > lTotal ? "Winning recovery phase" : "Losing recovery phase")
+    int partsN = array.size(parts)
+    if partsN > 0
+        for i2 = 0 to partsN - 1
+            string tok = array.get(parts, i2)
+            bool isW = str.contains(tok, "W")
+            // strip trailing W/L to get number
+            string numStr = str.replace_all(str.replace_all(tok, "W", ""), "L", "")
+            int n = math.round(str.tonumber(numStr))
+            if isW
+                wTotal += n
+            else
+                lTotal += n
+            runs += 1
+    string hint = runs == 0 ? "—" : runs <= 2 ? (wTotal > lTotal ? "Clean win streak" : lTotal > wTotal ? "Clean loss streak" : "Even back-and-forth") : (wTotal == lTotal ? "Choppy alternation" : wTotal > lTotal ? "Winning recovery phase" : "Losing recovery phase")
     hint
 
 
