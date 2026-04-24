@@ -1660,14 +1660,11 @@ if showTable and barstate.islast
         int d_D   = nz(time_close("D")   - time, bigMs)
         int d_W   = nz(time_close("W")   - time, bigMs)
         int soonestMs = math.min(math.min(math.min(d_4h, d_6h), math.min(d_8h, d_12h)), math.min(d_D, d_W))
-        // Identify which TF produces the soonest close — shown as a small tag so
-        // the user knows which candle they're waiting on (e.g. "8H in 0:04:23").
-        string soonestTF = soonestMs == d_4h ? "4H" : soonestMs == d_6h ? "6H" : soonestMs == d_8h ? "8H" : soonestMs == d_12h ? "12H" : soonestMs == d_D ? "D" : "W"
         int ccSec = math.max(0, int(soonestMs / 1000))
         int ccHr  = ccSec / 3600
         int ccMin = (ccSec % 3600) / 60
         int ccSs  = ccSec % 60
-        string ccTxt = ccHr > 0 ? soonestTF + " " + str.tostring(ccHr) + "h " + (ccMin < 10 ? "0" : "") + str.tostring(ccMin) + "m" : soonestTF + " " + str.tostring(ccMin) + ":" + (ccSs < 10 ? "0" : "") + str.tostring(ccSs)
+        string ccTxt = ccHr > 0 ? str.tostring(ccHr) + "h " + (ccMin < 10 ? "0" : "") + str.tostring(ccMin) + "m" : str.tostring(ccMin) + ":" + (ccSs < 10 ? "0" : "") + str.tostring(ccSs)
         color  ccBG  = ccHr == 0 and ccMin < 15 ? color.new(#00E5FF, 60) : color.new(#5A5A8F, 70)
         table.cell(main_table, 0, 11, "", bgcolor=baseBG)
         table.cell(main_table, 1, 11, "Bias in", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
