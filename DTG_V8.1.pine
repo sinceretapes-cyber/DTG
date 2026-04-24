@@ -75,6 +75,11 @@ streakPos      = input.string("Bottom Right", "Table Position", options=["Top Le
 streakSample   = input.string("200", "Analyze Last N Trades", options=["200", "300", "500", "All"], group=grpStats, tooltip="Sample size for streak analysis. Uses only completed trades in the buffer (capped by Max Trades Tracked).")
 statsMax       = input.int(500, "Max Trades Tracked", minval=50, maxval=1000, group=grpStats, tooltip="Ring buffer capacity. Oldest trade is dropped once full. Must be >= the Analyze Last N Trades value for the full sample to be available.")
 
+// ── MODEL PERFORMANCE ──
+grpModel       = "Model Performance"
+showModelStats = input.bool(true, "Show Model Performance", group=grpModel, tooltip="Per-model win rate, expectancy, and best zone across the entire trade buffer. Helps identify which entry model (EM1/EM2/EM3/EM4) is carrying the edge on this pair.")
+modelPos       = input.string("Middle Right", "Table Position", options=["Top Left", "Top Right", "Middle Left", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group=grpModel, tooltip="Where the Model Performance table anchors on the chart.")
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §4  UTILITY FUNCTIONS
@@ -1497,6 +1502,65 @@ f_patternHint(string p) =>
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §17c  MODEL PERFORMANCE — per-model stats across the trade buffer
+// ─────────────────────────────────────────────────────────────────────────────
+// For each enabled entry model (EM1/EM2/EM3/EM4), compute:
+//   • trade count
+//   • win-rate % (outcome > 0 counts as a win — matches streak intel convention)
+//   • expectancy in R (mean rMultiple)
+//   • "best zone" — the zone TF where this model won most often (requires ≥3
+//     trades on that zone to qualify, else '—'). Cross-section of TradeRecord
+//     .model and .zoneTF — cheap to compute, useful for answering "my pin bars
+//     work best on which zone?"
+// Single linear pass over trades[] on barstate.islast. Counters kept as fixed
+// 4-slot arrays so the model rows render in a stable order regardless of which
+// models have fired recently.
+
+// Per-model aggregate counters (idx 0=EM1, 1=EM2, 2=EM3, 3=EM4)
+var array<int>   mp_count = array.new<int>(4, 0)
+var array<int>   mp_wins  = array.new<int>(4, 0)
+var array<float> mp_sumR  = array.new<float>(4, 0.0)
+// Per-model × per-zone wins (idx = modelIdx*5 + zoneIdx, zoneIdx: 0=4H 1=6H 2=8H 3=12H 4=Daily)
+var array<int>   mp_zWins   = array.new<int>(20, 0)
+var array<int>   mp_zCounts = array.new<int>(20, 0)
+
+// Helpers used downstream by the table renderer
+f_modelIdx(string m) =>
+    m == "EM1" ? 0 : m == "EM2" ? 1 : m == "EM3" ? 2 : m == "EM4" ? 3 : -1
+f_zoneIdx(string z) =>
+    z == "4H" ? 0 : z == "6H" ? 1 : z == "8H" ? 2 : z == "12H" ? 3 : z == "Daily" ? 4 : -1
+f_zoneLabel(int i) =>
+    i == 0 ? "4H" : i == 1 ? "6H" : i == 2 ? "8H" : i == 3 ? "12H" : i == 4 ? "Daily" : "—"
+
+if showModelStats and barstate.islast
+    // Reset buckets — full recompute each last-bar pass
+    for k = 0 to 3
+        array.set(mp_count, k, 0)
+        array.set(mp_wins,  k, 0)
+        array.set(mp_sumR,  k, 0.0)
+    for k = 0 to 19
+        array.set(mp_zWins,   k, 0)
+        array.set(mp_zCounts, k, 0)
+
+    int nTrades = array.size(trades)
+    if nTrades > 0
+        for i = 0 to nTrades - 1
+            TradeRecord r = array.get(trades, i)
+            int mi = f_modelIdx(r.model)
+            if mi >= 0
+                array.set(mp_count, mi, array.get(mp_count, mi) + 1)
+                array.set(mp_sumR,  mi, array.get(mp_sumR,  mi) + r.rMultiple)
+                if r.rMultiple > 0
+                    array.set(mp_wins, mi, array.get(mp_wins, mi) + 1)
+                int zi = f_zoneIdx(r.zoneTF)
+                if zi >= 0
+                    int flat = mi * 5 + zi
+                    array.set(mp_zCounts, flat, array.get(mp_zCounts, flat) + 1)
+                    if r.rMultiple > 0
+                        array.set(mp_zWins, flat, array.get(mp_zWins, flat) + 1)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §18  DASHBOARD
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1792,6 +1856,88 @@ if showStats and barstate.islast
         table.cell(streak_table, 0, row, pStr,     text_color=s_valueTxt, text_size=tblSize, bgcolor=pTagBG,     text_halign=text.align_center)
         table.cell(streak_table, 1, row, pCntCell, text_color=s_valueTxt, text_size=tblSize, bgcolor=statsNeuBG, text_halign=text.align_center)
         table.cell(streak_table, 2, row, pHint,    text_color=s_valueTxt, text_size=tblSize, bgcolor=statsNeuBG, text_halign=text.align_center)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §18c  MODEL PERFORMANCE TABLE (separate, matches streak intel styling)
+// ─────────────────────────────────────────────────────────────────────────────
+// 5 columns × 6 rows:
+//   Row 0       — Title bar with total trade count across all models
+//   Row 1       — Column headers (Model, Trades, Win %, Exp R, Best Zone)
+//   Rows 2-5    — One row per model (EM1, EM2, EM3, EM4) always in order,
+//                 even if a model has 0 trades (keeps layout stable).
+
+if showModelStats and barstate.islast
+    var table model_table = table.new(modelPos == "Top Left" ? position.top_left : modelPos == "Top Right" ? position.top_right : modelPos == "Middle Left" ? position.middle_left : modelPos == "Middle Right" ? position.middle_right : modelPos == "Bottom Left" ? position.bottom_left : modelPos == "Bottom Center" ? position.bottom_center : position.bottom_right, 5, 6, bgcolor=color.new(#111122, 0), border_color=color.new(#1e1e38, 0), border_width=0, frame_color=color.new(#1e1e38, 0), frame_width=1)
+
+    color mp_baseBG   = color.new(#111122, 0)
+    color mp_titleBG  = color.new(#0a0a1a, 0)
+    color mp_titleTxt = color.new(#8899bb, 0)
+    color mp_labelTxt = color.new(#7a7a9e, 0)
+    color mp_valueTxt = color.new(#e8e8f0, 0)
+    color mp_headerBG = color.new(#1e1e38, 0)
+    color posBG       = color.new(#00C853, 70)
+    color negBG       = color.new(#FF1744, 70)
+    color neuBG       = color.new(#5A5A8F, 70)
+
+    // Totals across all four models for the title tag
+    int mp_allTrades = array.get(mp_count, 0) + array.get(mp_count, 1) + array.get(mp_count, 2) + array.get(mp_count, 3)
+
+    // Row 0 — Title
+    table.cell(model_table, 0, 0, "", bgcolor=mp_titleBG)
+    table.cell(model_table, 1, 0, "MODEL", text_color=mp_valueTxt, text_size=tblSize, bgcolor=mp_titleBG, text_halign=text.align_right)
+    table.cell(model_table, 2, 0, "PERFORMANCE", text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_titleBG, text_halign=text.align_left)
+    table.cell(model_table, 3, 0, "", bgcolor=mp_titleBG)
+    table.cell(model_table, 4, 0, mp_allTrades > 0 ? str.tostring(mp_allTrades) + " trades" : "awaiting data", text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_titleBG, text_halign=text.align_center)
+
+    // Row 1 — Column headers
+    table.cell(model_table, 0, 1, "Model",      text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
+    table.cell(model_table, 1, 1, "Trades",     text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
+    table.cell(model_table, 2, 1, "Win %",      text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
+    table.cell(model_table, 3, 1, "Exp R",      text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
+    table.cell(model_table, 4, 1, "Best Zone",  text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
+
+    // Rows 2-5 — one per model in fixed order
+    for mi = 0 to 3
+        int row = 2 + mi
+        int tc  = array.get(mp_count, mi)
+        int wc  = array.get(mp_wins,  mi)
+        float sr = array.get(mp_sumR, mi)
+        string mName = mi == 0 ? "EM1" : mi == 1 ? "EM2" : mi == 2 ? "EM3" : "EM4"
+        // Model tag cell — uses neutral grey if no trades, subtle accent otherwise
+        color  mTagBG = tc > 0 ? color.new(#3a3a5c, 30) : neuBG
+        // Min 3 trades before we report a meaningful win-rate / expectancy.
+        bool   hasStats = tc >= 3
+        float  wr = hasStats ? 100.0 * wc / tc : na
+        float  ex = hasStats ? sr / tc : na
+        string trStr = tc > 0 ? str.tostring(tc) : "—"
+        string wrStr = hasStats ? str.tostring(wr, "#.0") + "%" : tc > 0 ? str.tostring(tc) + "/3" : "—"
+        color  wrBG  = hasStats ? (wr >= 50 ? posBG : negBG) : neuBG
+        string exStr = hasStats ? (ex >= 0 ? "+" : "") + str.tostring(ex, "#.##") + "R" : "—"
+        color  exBG  = hasStats ? (ex > 0 ? posBG : ex < 0 ? negBG : neuBG) : neuBG
+
+        // Best zone — scan the 5 zone slots for this model and pick the one
+        // with the highest win-rate (requires >=3 trades on that zone).
+        int bestZi   = -1
+        float bestWr = -1.0
+        for zi = 0 to 4
+            int flat = mi * 5 + zi
+            int zc = array.get(mp_zCounts, flat)
+            int zw = array.get(mp_zWins, flat)
+            if zc >= 3
+                float zwr = 100.0 * zw / zc
+                if zwr > bestWr
+                    bestWr := zwr
+                    bestZi := zi
+        string bzStr = bestZi >= 0 ? f_zoneLabel(bestZi) + " " + str.tostring(bestWr, "#.0") + "%" : "—"
+        color  bzBG  = bestZi >= 0 ? posBG : neuBG
+
+        table.cell(model_table, 0, row, mName, text_color=mp_valueTxt, text_size=tblSize, bgcolor=mTagBG, text_halign=text.align_center)
+        table.cell(model_table, 1, row, trStr, text_color=mp_valueTxt, text_size=tblSize, bgcolor=neuBG,  text_halign=text.align_center)
+        table.cell(model_table, 2, row, wrStr, text_color=mp_valueTxt, text_size=tblSize, bgcolor=wrBG,   text_halign=text.align_center)
+        table.cell(model_table, 3, row, exStr, text_color=mp_valueTxt, text_size=tblSize, bgcolor=exBG,   text_halign=text.align_center)
+        table.cell(model_table, 4, row, bzStr, text_color=mp_valueTxt, text_size=tblSize, bgcolor=bzBG,   text_halign=text.align_center)
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §19  END
