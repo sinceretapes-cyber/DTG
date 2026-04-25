@@ -1517,9 +1517,15 @@ f_patternHint(string p) =>
 // models have fired recently.
 
 // Per-model aggregate counters (idx 0=EM1, 1=EM2, 2=EM3, 3=EM4)
-var array<int>   mp_count = array.new<int>(4, 0)
-var array<int>   mp_wins  = array.new<int>(4, 0)
-var array<float> mp_sumR  = array.new<float>(4, 0.0)
+// Outcome categories mirror TradeRecord.outcome:
+//   wins   = outcome  1  (TP2 hit)
+//   bes    = outcome  0  (TP1 secured then back to entry — '1:1 secured')
+//   losses = outcome -1  (SL hit)
+var array<int>   mp_count  = array.new<int>(4, 0)
+var array<int>   mp_wins   = array.new<int>(4, 0)
+var array<int>   mp_bes    = array.new<int>(4, 0)
+var array<int>   mp_losses = array.new<int>(4, 0)
+var array<float> mp_sumR   = array.new<float>(4, 0.0)
 // Per-model × per-zone wins (idx = modelIdx*5 + zoneIdx, zoneIdx: 0=4H 1=6H 2=8H 3=12H 4=Daily)
 var array<int>   mp_zWins   = array.new<int>(20, 0)
 var array<int>   mp_zCounts = array.new<int>(20, 0)
@@ -1535,9 +1541,11 @@ f_zoneLabel(int i) =>
 if showModelStats and barstate.islast
     // Reset buckets — full recompute each last-bar pass
     for k = 0 to 3
-        array.set(mp_count, k, 0)
-        array.set(mp_wins,  k, 0)
-        array.set(mp_sumR,  k, 0.0)
+        array.set(mp_count,  k, 0)
+        array.set(mp_wins,   k, 0)
+        array.set(mp_bes,    k, 0)
+        array.set(mp_losses, k, 0)
+        array.set(mp_sumR,   k, 0.0)
     for k = 0 to 19
         array.set(mp_zWins,   k, 0)
         array.set(mp_zCounts, k, 0)
@@ -1550,13 +1558,23 @@ if showModelStats and barstate.islast
             if mi >= 0
                 array.set(mp_count, mi, array.get(mp_count, mi) + 1)
                 array.set(mp_sumR,  mi, array.get(mp_sumR,  mi) + r.rMultiple)
-                if r.rMultiple > 0
-                    array.set(mp_wins, mi, array.get(mp_wins, mi) + 1)
+                // Tally outcome bucket — 3 mutually-exclusive categories.
+                if r.outcome == 1
+                    array.set(mp_wins,   mi, array.get(mp_wins,   mi) + 1)
+                else if r.outcome == 0
+                    array.set(mp_bes,    mi, array.get(mp_bes,    mi) + 1)
+                else
+                    array.set(mp_losses, mi, array.get(mp_losses, mi) + 1)
                 int zi = f_zoneIdx(r.zoneTF)
                 if zi >= 0
                     int flat = mi * 5 + zi
                     array.set(mp_zCounts, flat, array.get(mp_zCounts, flat) + 1)
-                    if r.rMultiple > 0
+                    // Best Zone uses outcome==1 (true wins) only — BE doesn't count
+                    // toward "best winning zone" since BE means the trade didn't
+                    // reach TP2. This matches how a trader thinks: best zone is
+                    // where the model actually closes profitable, not where it
+                    // breaks even.
+                    if r.outcome == 1
                         array.set(mp_zWins, flat, array.get(mp_zWins, flat) + 1)
 
 
@@ -1868,7 +1886,7 @@ if showStats and barstate.islast
 //                 even if a model has 0 trades (keeps layout stable).
 
 if showModelStats and barstate.islast
-    var table model_table = table.new(modelPos == "Top Left" ? position.top_left : modelPos == "Top Right" ? position.top_right : modelPos == "Middle Left" ? position.middle_left : modelPos == "Middle Right" ? position.middle_right : modelPos == "Bottom Left" ? position.bottom_left : modelPos == "Bottom Center" ? position.bottom_center : position.bottom_right, 5, 6, bgcolor=color.new(#111122, 0), border_color=color.new(#1e1e38, 0), border_width=0, frame_color=color.new(#1e1e38, 0), frame_width=1)
+    var table model_table = table.new(modelPos == "Top Left" ? position.top_left : modelPos == "Top Right" ? position.top_right : modelPos == "Middle Left" ? position.middle_left : modelPos == "Middle Right" ? position.middle_right : modelPos == "Bottom Left" ? position.bottom_left : modelPos == "Bottom Center" ? position.bottom_center : position.bottom_right, 6, 6, bgcolor=color.new(#111122, 0), border_color=color.new(#1e1e38, 0), border_width=0, frame_color=color.new(#1e1e38, 0), frame_width=1)
 
     color mp_baseBG   = color.new(#111122, 0)
     color mp_titleBG  = color.new(#0a0a1a, 0)
@@ -1879,6 +1897,7 @@ if showModelStats and barstate.islast
     color posBG       = color.new(#00C853, 70)
     color negBG       = color.new(#FF1744, 70)
     color neuBG       = color.new(#5A5A8F, 70)
+    color beBG        = color.new(#FF9100, 70)
 
     // Totals across all four models for the title tag
     int mp_allTrades = array.get(mp_count, 0) + array.get(mp_count, 1) + array.get(mp_count, 2) + array.get(mp_count, 3)
@@ -1888,24 +1907,40 @@ if showModelStats and barstate.islast
     table.cell(model_table, 1, 0, "MODEL", text_color=mp_valueTxt, text_size=tblSize, bgcolor=mp_titleBG, text_halign=text.align_right)
     table.cell(model_table, 2, 0, "PERFORMANCE", text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_titleBG, text_halign=text.align_left)
     table.cell(model_table, 3, 0, "", bgcolor=mp_titleBG)
-    table.cell(model_table, 4, 0, mp_allTrades > 0 ? str.tostring(mp_allTrades) + " trades" : "awaiting data", text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_titleBG, text_halign=text.align_center)
+    table.cell(model_table, 4, 0, "", bgcolor=mp_titleBG)
+    table.cell(model_table, 5, 0, mp_allTrades > 0 ? str.tostring(mp_allTrades) + " trades" : "awaiting data", text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_titleBG, text_halign=text.align_center)
 
     // Row 1 — Column headers
     table.cell(model_table, 0, 1, "Model",      text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
     table.cell(model_table, 1, 1, "Trades",     text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
-    table.cell(model_table, 2, 1, "Win %",      text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
-    table.cell(model_table, 3, 1, "Exp R",      text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
-    table.cell(model_table, 4, 1, "Best Zone",  text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
+    table.cell(model_table, 2, 1, "W·BE·L",     text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
+    table.cell(model_table, 3, 1, "Win %",      text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
+    table.cell(model_table, 4, 1, "Exp R",      text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
+    table.cell(model_table, 5, 1, "Best Zone",  text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
 
     // Rows 2-5 — one per model in fixed order
     for mi = 0 to 3
         int row = 2 + mi
-        int tc  = array.get(mp_count, mi)
-        int wc  = array.get(mp_wins,  mi)
-        float sr = array.get(mp_sumR, mi)
+        int tc  = array.get(mp_count,  mi)
+        int wc  = array.get(mp_wins,   mi)
+        int bc  = array.get(mp_bes,    mi)
+        int lc  = array.get(mp_losses, mi)
+        float sr = array.get(mp_sumR,  mi)
         string mName = mi == 0 ? "EM1" : mi == 1 ? "EM2" : mi == 2 ? "EM3" : "EM4"
         // Model tag cell — uses neutral grey if no trades, subtle accent otherwise
         color  mTagBG = tc > 0 ? color.new(#3a3a5c, 30) : neuBG
+
+        // W·BE·L breakdown cell — always shown when trades > 0 even if below
+        // the win-rate qualification threshold, since the raw counts are
+        // self-evidently informative ("3·1·0" reads correctly with no math).
+        // Background tints toward the dominant outcome:
+        //   wins majority → green
+        //   losses majority → red
+        //   BE majority → orange
+        //   tie / no trades → neutral grey
+        string wblStr = tc > 0 ? str.tostring(wc) + "·" + str.tostring(bc) + "·" + str.tostring(lc) : "—"
+        color  wblBG  = tc == 0 ? neuBG : wc > bc and wc > lc ? posBG : lc > wc and lc > bc ? negBG : bc > wc and bc > lc ? beBG : neuBG
+
         // Min 3 trades before we report a meaningful win-rate / expectancy.
         bool   hasStats = tc >= 3
         float  wr = hasStats ? 100.0 * wc / tc : na
@@ -1932,11 +1967,12 @@ if showModelStats and barstate.islast
         string bzStr = bestZi >= 0 ? f_zoneLabel(bestZi) + " " + str.tostring(bestWr, "#.0") + "%" : "—"
         color  bzBG  = bestZi >= 0 ? posBG : neuBG
 
-        table.cell(model_table, 0, row, mName, text_color=mp_valueTxt, text_size=tblSize, bgcolor=mTagBG, text_halign=text.align_center)
-        table.cell(model_table, 1, row, trStr, text_color=mp_valueTxt, text_size=tblSize, bgcolor=neuBG,  text_halign=text.align_center)
-        table.cell(model_table, 2, row, wrStr, text_color=mp_valueTxt, text_size=tblSize, bgcolor=wrBG,   text_halign=text.align_center)
-        table.cell(model_table, 3, row, exStr, text_color=mp_valueTxt, text_size=tblSize, bgcolor=exBG,   text_halign=text.align_center)
-        table.cell(model_table, 4, row, bzStr, text_color=mp_valueTxt, text_size=tblSize, bgcolor=bzBG,   text_halign=text.align_center)
+        table.cell(model_table, 0, row, mName,  text_color=mp_valueTxt, text_size=tblSize, bgcolor=mTagBG, text_halign=text.align_center)
+        table.cell(model_table, 1, row, trStr,  text_color=mp_valueTxt, text_size=tblSize, bgcolor=neuBG,  text_halign=text.align_center)
+        table.cell(model_table, 2, row, wblStr, text_color=mp_valueTxt, text_size=tblSize, bgcolor=wblBG,  text_halign=text.align_center)
+        table.cell(model_table, 3, row, wrStr,  text_color=mp_valueTxt, text_size=tblSize, bgcolor=wrBG,   text_halign=text.align_center)
+        table.cell(model_table, 4, row, exStr,  text_color=mp_valueTxt, text_size=tblSize, bgcolor=exBG,   text_halign=text.align_center)
+        table.cell(model_table, 5, row, bzStr,  text_color=mp_valueTxt, text_size=tblSize, bgcolor=bzBG,   text_halign=text.align_center)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
