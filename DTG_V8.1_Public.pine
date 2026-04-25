@@ -11,17 +11,39 @@ indicator("DTG V8.1", overlay=true, max_labels_count=500, max_lines_count=500, m
 // ─────────────────────────────────────────────────────────────────────────────
 // §1  INPUTS
 // ─────────────────────────────────────────────────────────────────────────────
-// Inputs are organised into 4 logical groups:
-//   1. Signals        — what to display when a setup fires
-//   2. Visuals        — dashboard, zones, RR boxes, history, windows
-//   3. Risk Management — account size, currency, risk per trade
-//   4. System Rules   — when signals are allowed to fire
+// Inputs are organised into 5 logical groups:
+//   1. System Preset  — single dropdown that bundles trading philosophy
+//   2. Signals        — what to display when a setup fires
+//   3. Visuals        — dashboard, zones, RR boxes, history, windows
+//   4. Risk Management — account size, currency, risk per trade
 //
 // Hardcoded internals (not exposed to keep the menu clean):
 //   • EM1 entry model   — always enabled (the only model in this build)
 //   • Bias countdown    — always shown (small, useful, no reason to hide)
 const bool enableEM1         = true
 const bool showBiasCountdown = true
+
+// ── SYSTEM PRESET (top of menu — the most consequential decision) ──
+// Single dropdown that bundles 4 system rules + the TP1/BE behaviour into
+// one named mode. Presets are a clearer, less-error-prone way for members
+// to switch between trading philosophies than 5 separate checkboxes.
+//
+//   V8 Pro      — original strict gating with TP1→BE trail
+//   Funded Pro  — strict gating, NO TP1, NO BE move; binary Entry→TP2 or
+//                 Entry→SL exits. Matches funded-account preferences.
+//   V8 Unlocked — every system filter off; raw pattern fires. NOT recommended
+//                 for live trading — see warning rendered on chart when active.
+grpSystem       = "System Preset"
+preset          = input.string("V8 Pro", "Mode", options=["V8 Pro", "Funded Pro", "V8 Unlocked"], group=grpSystem, tooltip="V8 Pro — original strict 3-step system with TP1→BE trail (recommended default).\n\nFunded Pro — strict gating, but trade is binary: Entry hits TP2 (Win) or SL (Loss). No TP1, no break-even move. Matches funded-account requirements.\n\n⚠ V8 Unlocked — every system filter off. Fires on raw EM1 pattern + bias only. Expect significantly more signals but unverified win rate. Use at your own risk — NOT recommended for live trading.")
+
+// Derive the four legacy rule booleans from the preset choice. Downstream
+// code keeps reading these names so nothing else changes.
+bool excludeNonTW   = preset != "V8 Unlocked"
+bool windowTapsOnly = preset != "V8 Unlocked"
+bool oneTradePerDay = preset != "V8 Unlocked"
+bool requireZoneTap = preset != "V8 Unlocked"
+// Funded Pro disables TP1 management entirely — exit is binary (TP2 or SL).
+bool tp1Enabled     = preset != "Funded Pro"
 
 // ── SIGNALS ──
 grpSig        = "Signals"
@@ -60,27 +82,7 @@ accountSize   = input.float(10000, "Account Size",  minval=100, step=500, group=
 acctCurrency  = input.string("USD", "Account Currency", options=["USD", "AUD", "EUR", "GBP"], group=grpRisk, tooltip="Select your account currency. Lot sizes auto-adjust using live exchange rates.")
 riskPct       = input.string("1%",  "Risk Per Trade",   options=["0.5%", "1%", "2%", "3%"], group=grpRisk)
 
-// ── SYSTEM PRESET ──
-// Single dropdown that bundles 4 system rules + the TP1/BE behaviour into
-// one named mode. Presets are a clearer, less-error-prone way for members
-// to switch between trading philosophies than 5 separate checkboxes.
-//
-//   V8 Pro      — full system rules on, TP1→BE trail (the original V8 way)
-//   V8 Unlocked — all system rules off, TP1→BE trail (raw pattern fires)
-//   Funded Pro  — full system rules on, NO TP1, NO BE move (clean Entry→TP2
-//                 or Entry→SL only; matches funded-account preference for
-//                 binary outcomes)
-grpSystem       = "System Preset"
-preset          = input.string("V8 Pro", "Mode", options=["V8 Pro", "V8 Unlocked", "Funded Pro"], group=grpSystem, tooltip="V8 Pro — original strict gating with TP1→BE trail.\nV8 Unlocked — every system filter off, fires on any pattern in bias direction.\nFunded Pro — strict gating, but trade is binary: Entry hits TP2 (Win) or SL (Loss). No TP1, no break-even move. Matches funded-account preferences.")
-
-// Derive the four legacy rule booleans from the preset choice. Downstream
-// code keeps reading these names so nothing else changes.
-bool excludeNonTW   = preset != "V8 Unlocked"
-bool windowTapsOnly = preset != "V8 Unlocked"
-bool oneTradePerDay = preset != "V8 Unlocked"
-bool requireZoneTap = preset != "V8 Unlocked"
-// Funded Pro disables TP1 management entirely — exit is binary (TP2 or SL).
-bool tp1Enabled     = preset != "Funded Pro"
+// (System Preset moved to top of §1 — see beginning of file.)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1112,6 +1114,25 @@ if showTable and barstate.islast
         table.cell(main_table, 0, 10, "", bgcolor=baseBG)
         table.cell(main_table, 1, 10, "Rescan", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
         table.cell(main_table, 2, 10, ccTxt,    text_color=valueTxt, text_size=tblSize, bgcolor=ccBG, text_halign=text.align_center)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §18b  V8 UNLOCKED — chart warning banner (Option C, surface #2)
+// ─────────────────────────────────────────────────────────────────────────────
+// Tooltip on the preset dropdown is surface #1 (always available on hover
+// inside the menu). This second surface puts an unmissable red label on the
+// chart whenever V8 Unlocked is the active preset, so users can't forget
+// they've switched to the unfiltered mode. Anchored top-left in its own
+// 1x1 table so it doesn't push the main dashboard around.
+
+// Declare the warning table once; clear & repopulate (or blank) on every
+// last bar so it appears/disappears immediately when the user switches preset.
+var table warn_table = table.new(position.top_left, 1, 1, bgcolor=color.new(#FF1744, 70), border_color=color.new(#FF1744, 0), border_width=1, frame_color=color.new(#FF1744, 0), frame_width=1)
+if barstate.islast
+    if preset == "V8 Unlocked"
+        table.cell(warn_table, 0, 0, "⚠ Caution — V8 Unlocked removes all 4 system filters. Expect more signals but unverified win rate. Use at your own risk.", text_color=color.white, text_size=size.small, bgcolor=color.new(#FF1744, 70), text_halign=text.align_center)
+    else
+        table.clear(warn_table, 0, 0, 0, 0)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
