@@ -1913,8 +1913,11 @@ if showModelStats and barstate.islast
     // Row 1 — Column headers
     table.cell(model_table, 0, 1, "Model",      text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
     table.cell(model_table, 1, 1, "Trades",     text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
-    table.cell(model_table, 2, 1, "W·BE·L",     text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
-    table.cell(model_table, 3, 1, "Win %",      text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
+    // Trader-language column headers — '1:2' = TP2 hit, '1:1' = TP1 secured then
+    // back to entry (BE), 'L' = SL hit. Matches the R-multiple naming users see
+    // on the chart RR boxes, so the two surfaces speak the same vocabulary.
+    table.cell(model_table, 2, 1, "1:2·1:1·L",  text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
+    table.cell(model_table, 3, 1, "TP2 %",      text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
     table.cell(model_table, 4, 1, "Exp R",      text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
     table.cell(model_table, 5, 1, "Best Zone",  text_color=mp_titleTxt, text_size=tblSize, bgcolor=mp_headerBG, text_halign=text.align_center)
 
