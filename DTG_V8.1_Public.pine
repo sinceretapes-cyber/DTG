@@ -60,12 +60,27 @@ accountSize   = input.float(10000, "Account Size",  minval=100, step=500, group=
 acctCurrency  = input.string("USD", "Account Currency", options=["USD", "AUD", "EUR", "GBP"], group=grpRisk, tooltip="Select your account currency. Lot sizes auto-adjust using live exchange rates.")
 riskPct       = input.string("1%",  "Risk Per Trade",   options=["0.5%", "1%", "2%", "3%"], group=grpRisk)
 
-// ── SYSTEM RULES ──
-grpSystem       = "System Rules"
-excludeNonTW    = input.bool(true, "Signals During Window Only",   group=grpSystem, tooltip="Only fire entry signals during the trading window (H4 candles 3-5).")
-windowTapsOnly  = input.bool(true, "Zone Taps During Window Only", group=grpSystem, tooltip="Step 2 zone touch only counts during the trading window. Off = taps count any time.")
-oneTradePerDay  = input.bool(true, "One Trade Per Day",            group=grpSystem, tooltip="After a winning trade (TP2 hit), no more signals for the day. SL/BE trades allow retries.")
-requireZoneTap  = input.bool(true, "Require Zone Tap for Signal",  group=grpSystem, tooltip="Enforce Step 2: signals only fire after a discount zone has been tapped. Turn off to allow signals without a zone tap.")
+// ── SYSTEM PRESET ──
+// Single dropdown that bundles 4 system rules + the TP1/BE behaviour into
+// one named mode. Presets are a clearer, less-error-prone way for members
+// to switch between trading philosophies than 5 separate checkboxes.
+//
+//   V8 Pro      — full system rules on, TP1→BE trail (the original V8 way)
+//   V8 Unlocked — all system rules off, TP1→BE trail (raw pattern fires)
+//   Funded Pro  — full system rules on, NO TP1, NO BE move (clean Entry→TP2
+//                 or Entry→SL only; matches funded-account preference for
+//                 binary outcomes)
+grpSystem       = "System Preset"
+preset          = input.string("V8 Pro", "Mode", options=["V8 Pro", "V8 Unlocked", "Funded Pro"], group=grpSystem, tooltip="V8 Pro — original strict gating with TP1→BE trail.\nV8 Unlocked — every system filter off, fires on any pattern in bias direction.\nFunded Pro — strict gating, but trade is binary: Entry hits TP2 (Win) or SL (Loss). No TP1, no break-even move. Matches funded-account preferences.")
+
+// Derive the four legacy rule booleans from the preset choice. Downstream
+// code keeps reading these names so nothing else changes.
+bool excludeNonTW   = preset != "V8 Unlocked"
+bool windowTapsOnly = preset != "V8 Unlocked"
+bool oneTradePerDay = preset != "V8 Unlocked"
+bool requireZoneTap = preset != "V8 Unlocked"
+// Funded Pro disables TP1 management entirely — exit is binary (TP2 or SL).
+bool tp1Enabled     = preset != "Funded Pro"
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -632,18 +647,27 @@ if trade.status == "Invalid"
     if bar_index - nz(trade.bar) > 1
         trade.status := "Scanning"
 
-// Triggered = live trade. Only exits on TP2, SL, or BE (entry) hit.
+// Triggered = live trade. Exit logic depends on preset:
+//   V8 Pro / V8 Unlocked — three exits: TP2 (W), TP1→BE (1:1 secured), SL (L)
+//   Funded Pro           — two exits: TP2 (W) or SL (L). No TP1 management,
+//                          no stop-to-entry move. trade.tp1hit stays false
+//                          forever so every TP1/BE-conditional visual falls
+//                          back to its 'pre-TP1' state automatically.
+//
 // V8.1 FIX #1: wasTP1hit snapshot prevents same-bar TP1+BE race.
 // V8.1 FIX #2: gate with bar_index > trade.triggerBar — skip the trigger bar
 //              so a pre-trigger wick through SL isn't counted as a loss.
 if trade.status == "Triggered" and bar_index > nz(trade.triggerBar)
     bool wasTP1hit = trade.tp1hit
-    bool checkTP1  = (trade.bias == buy_c and high > trade.tp1) or (trade.bias == sell_c and low < trade.tp1)
+    // TP1 detection only when the preset enables it (Funded Pro skips this)
+    bool checkTP1  = tp1Enabled and ((trade.bias == buy_c and high > trade.tp1) or (trade.bias == sell_c and low < trade.tp1))
     if checkTP1
         trade.tp1hit := true
     bool hitTP2 = (trade.bias == sell_c and low < trade.tp2) or (trade.bias == buy_c and high > trade.tp2)
     bool hitSL  = not wasTP1hit and ((trade.bias == sell_c and high > trade.sl) or (trade.bias == buy_c and low < trade.sl))
-    bool hitBE  = wasTP1hit and ((trade.bias == buy_c and low < trade.entry) or (trade.bias == sell_c and high > trade.entry))
+    // hitBE only meaningful when TP1 is enabled — gate by tp1Enabled so it
+    // can never fire under Funded Pro (where wasTP1hit is always false anyway).
+    bool hitBE  = tp1Enabled and wasTP1hit and ((trade.bias == buy_c and low < trade.entry) or (trade.bias == sell_c and high > trade.entry))
     if hitTP2 or hitBE or hitSL
         if hitTP2
             dailyProfitTaken := true
@@ -736,21 +760,29 @@ if barstate.islast and showRR
             color sl_bg     = trade.tp1hit ? color.new(#FF9100, 92) : color.new(#FF1744, 88)
             color sl_bdr    = trade.tp1hit ? color.new(#FF9100, 60) : color.new(#FF1744, 60)
             rrBoxSL  := box.new(rr_left, trade.entry, rr_right, sl_bottom, border_color=sl_bdr, bgcolor=sl_bg, border_width=1)
-            rrBoxTP1 := box.new(rr_left, trade.tp1,   rr_right, trade.entry, border_color=color.new(#00C853, 60), bgcolor=color.new(#00C853, 88), border_width=1)
-            rrBoxTP2 := box.new(rr_left, trade.tp2,   rr_right, trade.tp1,   border_color=color.new(#00E676, 60), bgcolor=color.new(#00E676, 92), border_width=1)
+            if tp1Enabled
+                // V8 Pro / V8 Unlocked — split TP1/TP2 bands
+                rrBoxTP1 := box.new(rr_left, trade.tp1, rr_right, trade.entry, border_color=color.new(#00C853, 60), bgcolor=color.new(#00C853, 88), border_width=1)
+                rrBoxTP2 := box.new(rr_left, trade.tp2, rr_right, trade.tp1,   border_color=color.new(#00E676, 60), bgcolor=color.new(#00E676, 92), border_width=1)
+            else
+                // Funded Pro — single green band from Entry to TP2 (no TP1 split)
+                rrBoxTP2 := box.new(rr_left, trade.tp2, rr_right, trade.entry, border_color=color.new(#00E676, 60), bgcolor=color.new(#00E676, 90), border_width=1)
             rrEntry  := line.new(rr_left, trade.entry, rr_right, trade.entry, color=color.new(#FFFFFF, 30), style=line.style_solid, width=2)
-            if trade.tp1hit
+            if tp1Enabled and trade.tp1hit
                 rrTP1lbl := label.new(rr_right, trade.tp1, "1:1 ✓", color=color.new(#00C853, 20), textcolor=color.white, style=label.style_label_left, size=size.tiny)
 
         else if trade.bias == sell_c
             float sl_top = trade.tp1hit ? trade.entry : trade.sl
             color sl_bg  = trade.tp1hit ? color.new(#FF9100, 92) : color.new(#FF1744, 88)
             color sl_bdr = trade.tp1hit ? color.new(#FF9100, 60) : color.new(#FF1744, 60)
-            rrBoxSL  := box.new(rr_left, sl_top,      rr_right, trade.entry, border_color=sl_bdr, bgcolor=sl_bg, border_width=1)
-            rrBoxTP1 := box.new(rr_left, trade.entry, rr_right, trade.tp1,   border_color=color.new(#00C853, 60), bgcolor=color.new(#00C853, 88), border_width=1)
-            rrBoxTP2 := box.new(rr_left, trade.tp1,   rr_right, trade.tp2,   border_color=color.new(#00E676, 60), bgcolor=color.new(#00E676, 92), border_width=1)
+            rrBoxSL  := box.new(rr_left, sl_top, rr_right, trade.entry, border_color=sl_bdr, bgcolor=sl_bg, border_width=1)
+            if tp1Enabled
+                rrBoxTP1 := box.new(rr_left, trade.entry, rr_right, trade.tp1, border_color=color.new(#00C853, 60), bgcolor=color.new(#00C853, 88), border_width=1)
+                rrBoxTP2 := box.new(rr_left, trade.tp1,   rr_right, trade.tp2, border_color=color.new(#00E676, 60), bgcolor=color.new(#00E676, 92), border_width=1)
+            else
+                rrBoxTP2 := box.new(rr_left, trade.entry, rr_right, trade.tp2, border_color=color.new(#00E676, 60), bgcolor=color.new(#00E676, 90), border_width=1)
             rrEntry  := line.new(rr_left, trade.entry, rr_right, trade.entry, color=color.new(#FFFFFF, 30), style=line.style_solid, width=2)
-            if trade.tp1hit
+            if tp1Enabled and trade.tp1hit
                 rrTP1lbl := label.new(rr_right, trade.tp1, "1:1 ✓", color=color.new(#00C853, 20), textcolor=color.white, style=label.style_label_left, size=size.tiny)
 
 if barstate.islast and autoDiscount
@@ -793,14 +825,22 @@ if barstate.islast and showHistory
         int   hLeft    = hist.time
         int   hRight   = math.max(hist.exitTime, hist.time + minWidth)
 
+        // History visual mirrors the live RR-box layout: 3-band (SL/TP1/TP2)
+        // when TP1 management is on; 2-band (SL/TP2) under Funded Pro.
         if hist.dir == 1
             lastBoxSL  := box.new(hLeft, hist.entry, hRight, hist.sl,    xloc=xloc.bar_time, border_color=color.new(#FF1744, 70), bgcolor=slBG,  border_width=1)
-            lastBoxTP1 := box.new(hLeft, hist.tp1,   hRight, hist.entry, xloc=xloc.bar_time, border_color=color.new(#00C853, 70), bgcolor=tp1BG, border_width=1)
-            lastBoxTP2 := box.new(hLeft, hist.tp2,   hRight, hist.tp1,   xloc=xloc.bar_time, border_color=color.new(#00E676, 70), bgcolor=tp2BG, border_width=1)
+            if tp1Enabled
+                lastBoxTP1 := box.new(hLeft, hist.tp1, hRight, hist.entry, xloc=xloc.bar_time, border_color=color.new(#00C853, 70), bgcolor=tp1BG, border_width=1)
+                lastBoxTP2 := box.new(hLeft, hist.tp2, hRight, hist.tp1,   xloc=xloc.bar_time, border_color=color.new(#00E676, 70), bgcolor=tp2BG, border_width=1)
+            else
+                lastBoxTP2 := box.new(hLeft, hist.tp2, hRight, hist.entry, xloc=xloc.bar_time, border_color=color.new(#00E676, 70), bgcolor=tp2BG, border_width=1)
         else
-            lastBoxSL  := box.new(hLeft, hist.sl,    hRight, hist.entry, xloc=xloc.bar_time, border_color=color.new(#FF1744, 70), bgcolor=slBG,  border_width=1)
-            lastBoxTP1 := box.new(hLeft, hist.entry, hRight, hist.tp1,   xloc=xloc.bar_time, border_color=color.new(#00C853, 70), bgcolor=tp1BG, border_width=1)
-            lastBoxTP2 := box.new(hLeft, hist.tp1,   hRight, hist.tp2,   xloc=xloc.bar_time, border_color=color.new(#00E676, 70), bgcolor=tp2BG, border_width=1)
+            lastBoxSL  := box.new(hLeft, hist.sl, hRight, hist.entry, xloc=xloc.bar_time, border_color=color.new(#FF1744, 70), bgcolor=slBG,  border_width=1)
+            if tp1Enabled
+                lastBoxTP1 := box.new(hLeft, hist.entry, hRight, hist.tp1, xloc=xloc.bar_time, border_color=color.new(#00C853, 70), bgcolor=tp1BG, border_width=1)
+                lastBoxTP2 := box.new(hLeft, hist.tp1,   hRight, hist.tp2, xloc=xloc.bar_time, border_color=color.new(#00E676, 70), bgcolor=tp2BG, border_width=1)
+            else
+                lastBoxTP2 := box.new(hLeft, hist.entry, hRight, hist.tp2, xloc=xloc.bar_time, border_color=color.new(#00E676, 70), bgcolor=tp2BG, border_width=1)
 
         lastEntry := line.new(hLeft, hist.entry, hRight, hist.entry, xloc=xloc.bar_time, color=color.new(#FFFFFF, 60), style=line.style_dotted, width=1)
 
@@ -1005,26 +1045,46 @@ if showTable and barstate.islast
         float lotVal_d = rPL_d > 0 ? math.max(0.01, math.round(riskUSD_d / rPL_d, isCrypto ? 4 : 2)) : 0.01
 
         color tradeCellBG = color.new(trade.bias, 55)
-        // Trade levels — rows 5-9 (was 6-10 before Model row was removed)
+        // Trade levels layout depends on preset:
+        //   tp1Enabled (V8 Pro / V8 Unlocked):   Entry · SL · TP1 · TP2 · Lots → rows 5-9
+        //   else (Funded Pro):                   Entry · SL · TP2 · Lots         → rows 5-8 (TP1 row blanked)
+        //
+        // Entry row — always row 5
         table.cell(main_table, 0, 5, "", bgcolor=baseBG)
         table.cell(main_table, 1, 5, "Entry",     text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
         table.cell(main_table, 2, 5, str.tostring(trade.entry, format.mintick), text_color=valueTxt, text_size=tblSize, bgcolor=tradeCellBG, text_halign=text.align_center)
+        // SL row — always row 6. 'Moved To BE' label only meaningful when
+        // TP1 management is enabled (Funded Pro never gets there).
         table.cell(main_table, 0, 6, "", bgcolor=baseBG)
-        string slValue_d = trade.tp1hit ? "Moved To BE" : str.tostring(trade.sl, format.mintick)
-        color  slCellBG  = trade.tp1hit ? color.new(#FF9100, 45) : tradeCellBG
+        string slValue_d = (tp1Enabled and trade.tp1hit) ? "Moved To BE" : str.tostring(trade.sl, format.mintick)
+        color  slCellBG  = (tp1Enabled and trade.tp1hit) ? color.new(#FF9100, 45) : tradeCellBG
         table.cell(main_table, 1, 6, "SL",        text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
         table.cell(main_table, 2, 6, slValue_d,   text_color=valueTxt, text_size=tblSize, bgcolor=slCellBG, text_halign=text.align_center)
-        table.cell(main_table, 0, 7, "", bgcolor=baseBG)
-        color  tp1CellBG  = trade.tp1hit ? color.new(#00C853, 35) : tradeCellBG
-        string tp1Value_d = trade.tp1hit ? "Secured" : str.tostring(trade.tp1, format.mintick)
-        table.cell(main_table, 1, 7, "TP1",       text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 7, tp1Value_d,  text_color=valueTxt, text_size=tblSize, bgcolor=tp1CellBG, text_halign=text.align_center)
-        table.cell(main_table, 0, 8, "", bgcolor=baseBG)
-        table.cell(main_table, 1, 8, "TP2",       text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 8, str.tostring(trade.tp2, format.mintick), text_color=valueTxt, text_size=tblSize, bgcolor=tradeCellBG, text_halign=text.align_center)
-        table.cell(main_table, 0, 9, "", bgcolor=baseBG)
-        table.cell(main_table, 1, 9, "Lots",     text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 9, str.tostring(lotVal_d, isCrypto ? "#.####" : "#.##") + " " + lotUnit_d, text_color=color.new(#00E5FF, 0), text_size=tblSize, bgcolor=tradeCellBG, text_halign=text.align_center)
+        if tp1Enabled
+            // TP1 row (row 7) — only rendered when preset uses TP1 management
+            color  tp1CellBG  = trade.tp1hit ? color.new(#00C853, 35) : tradeCellBG
+            string tp1Value_d = trade.tp1hit ? "Secured" : str.tostring(trade.tp1, format.mintick)
+            table.cell(main_table, 0, 7, "", bgcolor=baseBG)
+            table.cell(main_table, 1, 7, "TP1",       text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+            table.cell(main_table, 2, 7, tp1Value_d,  text_color=valueTxt, text_size=tblSize, bgcolor=tp1CellBG, text_halign=text.align_center)
+            // TP2 row 8, Lots row 9
+            table.cell(main_table, 0, 8, "", bgcolor=baseBG)
+            table.cell(main_table, 1, 8, "TP2",       text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+            table.cell(main_table, 2, 8, str.tostring(trade.tp2, format.mintick), text_color=valueTxt, text_size=tblSize, bgcolor=tradeCellBG, text_halign=text.align_center)
+            table.cell(main_table, 0, 9, "", bgcolor=baseBG)
+            table.cell(main_table, 1, 9, "Lots",      text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+            table.cell(main_table, 2, 9, str.tostring(lotVal_d, isCrypto ? "#.####" : "#.##") + " " + lotUnit_d, text_color=color.new(#00E5FF, 0), text_size=tblSize, bgcolor=tradeCellBG, text_halign=text.align_center)
+        else
+            // Funded Pro — TP1 row blanked. TP2 moves up to row 7, Lots to row 8.
+            // Row 9 cleared so no stale cell from a previous V8 Pro render lingers.
+            table.clear(main_table, 0, 7, 2, 7)
+            table.cell(main_table, 0, 7, "", bgcolor=baseBG)
+            table.cell(main_table, 1, 7, "TP2",       text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+            table.cell(main_table, 2, 7, str.tostring(trade.tp2, format.mintick), text_color=valueTxt, text_size=tblSize, bgcolor=tradeCellBG, text_halign=text.align_center)
+            table.cell(main_table, 0, 8, "", bgcolor=baseBG)
+            table.cell(main_table, 1, 8, "Lots",      text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+            table.cell(main_table, 2, 8, str.tostring(lotVal_d, isCrypto ? "#.####" : "#.##") + " " + lotUnit_d, text_color=color.new(#00E5FF, 0), text_size=tblSize, bgcolor=tradeCellBG, text_halign=text.align_center)
+            table.clear(main_table, 0, 9, 2, 9)
     else
         table.clear(main_table, 0, 5, 2, 9)
 
