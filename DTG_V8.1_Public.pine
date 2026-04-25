@@ -1127,7 +1127,9 @@ if showTable and barstate.islast
 
 // Declare the warning table once; clear & repopulate (or blank) on every
 // last bar so it appears/disappears immediately when the user switches preset.
-var table warn_table = table.new(position.top_left, 1, 1, bgcolor=color.new(#FF1744, 70), border_color=color.new(#FF1744, 0), border_width=1, frame_color=color.new(#FF1744, 0), frame_width=1)
+// Anchored bottom-center so it sits above the time scale, away from the main
+// dashboard and price action.
+var table warn_table = table.new(position.bottom_center, 1, 1, bgcolor=color.new(#FF1744, 70), border_color=color.new(#FF1744, 0), border_width=1, frame_color=color.new(#FF1744, 0), frame_width=1)
 if barstate.islast
     if preset == "V8 Unlocked"
         table.cell(warn_table, 0, 0, "⚠ Caution — V8 Unlocked removes all 4 system filters. Expect more signals but unverified win rate. Use at your own risk.", text_color=color.white, text_size=size.small, bgcolor=color.new(#FF1744, 70), text_halign=text.align_center)
