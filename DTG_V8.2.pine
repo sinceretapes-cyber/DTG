@@ -1,5 +1,5 @@
 //@version=6
-indicator("DTG V8.1", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500, dynamic_requests=true)
+indicator("DTG V8.2", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500, dynamic_requests=true)
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
 // ║  DTG DZ STRATEGY — Tidied & Enhanced                                     ║
