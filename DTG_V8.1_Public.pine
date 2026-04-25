@@ -965,9 +965,16 @@ if showTable and barstate.islast
     table.cell(main_table, 1, 3, "Signal", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
     table.cell(main_table, 2, 3, trade.status, text_color=valueTxt, text_size=tblSize, bgcolor=color.new(noSignal_Bias, 30), text_halign=text.align_center)
 
-    table.cell(main_table, 0, 4, "", bgcolor=dividerBG)
-    table.cell(main_table, 1, 4, "System", text_color=labelTxt, text_size=tblSize, bgcolor=dividerBG, text_halign=text.align_right)
-    table.cell(main_table, 2, 4, systemStateStr, text_color=color.white, text_size=tblSize, bgcolor=color.new(systemStateClr, 20), text_halign=text.align_center)
+    // System state row — only meaningful while scanning (Awaiting / Ready /
+    // ✓ Complete / No Bias). During an Active / Triggered trade the user is
+    // already focused on the trade levels below, so we blank the row to
+    // keep the dashboard quiet.
+    if not showTrade
+        table.cell(main_table, 0, 4, "", bgcolor=dividerBG)
+        table.cell(main_table, 1, 4, "System", text_color=labelTxt, text_size=tblSize, bgcolor=dividerBG, text_halign=text.align_right)
+        table.cell(main_table, 2, 4, systemStateStr, text_color=color.white, text_size=tblSize, bgcolor=color.new(systemStateClr, 20), text_halign=text.align_center)
+    else
+        table.clear(main_table, 0, 4, 2, 4)
 
     if showTrade
         float riskPctVal_d = riskPct == "0.5%" ? 0.005 : riskPct == "1%" ? 0.01 : riskPct == "2%" ? 0.02 : 0.03
@@ -1043,8 +1050,8 @@ if showTable and barstate.islast
         string ccTxt = ccHr > 0 ? str.tostring(ccHr) + "h " + str.tostring(ccMin) + "m" : str.tostring(ccMin) + ":" + (ccSs < 10 ? "0" : "") + str.tostring(ccSs)
         color  ccBG  = ccHr == 0 and ccMin < 15 ? color.new(#00E5FF, 60) : color.new(#5A5A8F, 70)
         table.cell(main_table, 0, 10, "", bgcolor=baseBG)
-        table.cell(main_table, 1, 10, "Bias in", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 10, ccTxt,     text_color=valueTxt, text_size=tblSize, bgcolor=ccBG, text_halign=text.align_center)
+        table.cell(main_table, 1, 10, "Rescan", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+        table.cell(main_table, 2, 10, ccTxt,    text_color=valueTxt, text_size=tblSize, bgcolor=ccBG, text_halign=text.align_center)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
