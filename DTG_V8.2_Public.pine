@@ -605,7 +605,6 @@ if validBuy
     trade.model      := "EM1"
     trade.tp1hit     := false
     f_DTG_algo(DTG_Signal, bar_index, low, yloc.belowbar, buy_c, buy_style, em1_text, txt_c, label_size)
-    alert("EM1 buy setup on the " + TF_txt + " Consult data table before proceeding.", alert.freq_once_per_bar)
 
 if validSell
     trade.bar        := bar_index
@@ -620,24 +619,11 @@ if validSell
     trade.model      := "EM1"
     trade.tp1hit     := false
     f_DTG_algo(DTG_Signal, bar_index, high, yloc.abovebar, sell_c, sell_style, em1_text, txt_c, label_size)
-    alert("EM1 sell setup on the " + TF_txt + " Consult data table before proceeding.", alert.freq_once_per_bar)
 
 f_LABEL_truncate(DTG_Signal, showMax)
 
-alertcondition(validBuy or validSell,  title="System Signal",  message="DTG V8: Valid SYSTEM signal. Check dashboard for trade details.")
-alertcondition(rawBuy or rawSell,      title="Pattern Signal", message="DTG V8: EM1 pattern detected (system rules not applied).")
-
-// Lifecycle alerts — populated from §12 transitions below. We detect when
-// trade.status flips from one bar to the next using the [1] history operator,
-// so the alertcondition fires exactly once per transition (not every bar
-// while the trade remains in that state).
-//
-//   System Triggered — Active → Triggered (price crossed the entry level)
-//   System Invalid   — Active → Invalid   (entry never hit; setup expired)
-bool aSysTriggered = trade.status == "Triggered" and trade.status[1] != "Triggered"
-bool aSysInvalid   = trade.status == "Invalid"   and trade.status[1] != "Invalid"
-alertcondition(aSysTriggered, title="System Triggered", message="DTG V8: System signal TRIGGERED — price hit entry. Check dashboard for SL/TP levels.")
-alertcondition(aSysInvalid,   title="System Invalid",   message="DTG V8: System signal INVALID — entry not hit, setup expired.")
+// (Unified alert() emitter lives below §12 — it covers signal / triggered /
+// invalid in a single TradingView alert configuration.)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -700,6 +686,57 @@ if na(trade.status)
     trade.status := "None"
 
 noSignal_Bias = (trade.status == "Scanning" or trade.status == "None") ? H4_c : trade.bias
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §12b  UNIFIED ALERT EMITTER
+// ─────────────────────────────────────────────────────────────────────────────
+// Single alert() call per event so members can set up ONE TradingView alert
+// using "Any alert() function call" and receive a different message body
+// depending on which lifecycle event fired:
+//
+//   Signal     — Active state begins (a valid V8 signal just appeared)
+//   Triggered  — Active → Triggered (price crossed entry, trade is live)
+//   Invalid    — Active → Invalid   (entry never hit, setup expired)
+//
+// alertconditions kept below for backward compatibility — members with old
+// per-event alerts continue to work unchanged.
+
+// Detect the three transitions on this bar. For Signal we use validBuy/Sell
+// directly (only fires on the actual signal-fire bar). For Triggered/Invalid
+// we use trade.status[1] history operator so the alert fires exactly once
+// at the moment of state transition rather than every bar while the trade
+// lingers in that state.
+bool emit_signal    = validBuy or validSell
+bool emit_triggered = trade.status == "Triggered" and trade.status[1] != "Triggered"
+bool emit_invalid   = trade.status == "Invalid"   and trade.status[1] != "Invalid"
+
+// Each alert message is prefixed with the active preset in [brackets] so a
+// member running multiple charts with different presets can instantly tell
+// which mode produced the notification. The preset is also what controls
+// the alert volume — V8 Pro / Funded Pro filter more signals (fewer alerts),
+// V8 Unlocked is unfiltered (more alerts) — so members get exactly the
+// signal volume their chosen mode produces.
+//
+// Independent if-blocks (not else-if) so a same-bar signal+trigger sends
+// two distinct alerts — one announcing the signal, one announcing the
+// immediate trigger.
+string presetTag = "[" + preset + "] "
+if emit_signal
+    string sigDir = validBuy ? "BUY" : "SELL"
+    alert(presetTag + "DTG V8 — " + sigDir + " SIGNAL on " + syminfo.ticker + " " + TF_txt + " Entry " + str.tostring(trade.entry, format.mintick) + " · SL " + str.tostring(trade.sl, format.mintick) + " · TP2 " + str.tostring(trade.tp2, format.mintick), alert.freq_once_per_bar)
+if emit_triggered
+    string trgDir = trade.bias == buy_c ? "BUY" : "SELL"
+    alert(presetTag + "DTG V8 — " + trgDir + " TRIGGERED on " + syminfo.ticker + " " + TF_txt + " Price hit entry " + str.tostring(trade.entry, format.mintick) + " · SL " + str.tostring(trade.sl, format.mintick) + " · TP2 " + str.tostring(trade.tp2, format.mintick), alert.freq_once_per_bar)
+if emit_invalid
+    alert(presetTag + "DTG V8 — Setup INVALID on " + syminfo.ticker + " " + TF_txt + " Entry not hit, setup expired.", alert.freq_once_per_bar)
+
+
+// ── Backward-compatible alertconditions (old-style per-event alerts) ──
+alertcondition(emit_signal,    title="System Signal",    message="DTG V8: Valid SYSTEM signal. Check dashboard for trade details.")
+alertcondition(rawBuy or rawSell, title="Pattern Signal", message="DTG V8: EM1 pattern detected (system rules not applied).")
+alertcondition(emit_triggered, title="System Triggered", message="DTG V8: System signal TRIGGERED — price hit entry. Check dashboard for SL/TP levels.")
+alertcondition(emit_invalid,   title="System Invalid",   message="DTG V8: System signal INVALID — entry not hit, setup expired.")
 
 
 // ─────────────────────────────────────────────────────────────────────────────
