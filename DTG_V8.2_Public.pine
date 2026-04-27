@@ -707,9 +707,13 @@ noSignal_Bias = (trade.status == "Scanning" or trade.status == "None") ? H4_c : 
 // we use trade.status[1] history operator so the alert fires exactly once
 // at the moment of state transition rather than every bar while the trade
 // lingers in that state.
+// Pine v6 disallows the history-reference operator directly on UDT fields
+// ('trade.status[1]'); have to wrap the UDT instance in parens first so we
+// reference the previous-bar object, then read the field on it.
+string prevStatus = (trade[1]).status
 bool emit_signal    = validBuy or validSell
-bool emit_triggered = trade.status == "Triggered" and trade.status[1] != "Triggered"
-bool emit_invalid   = trade.status == "Invalid"   and trade.status[1] != "Invalid"
+bool emit_triggered = trade.status == "Triggered" and prevStatus != "Triggered"
+bool emit_invalid   = trade.status == "Invalid"   and prevStatus != "Invalid"
 
 // Each alert message is prefixed with the active preset in [brackets] so a
 // member running multiple charts with different presets can instantly tell
