@@ -2,7 +2,7 @@
 indicator("DTG V8.2", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500, dynamic_requests=true)
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
-// ║  DTG ENGINE — Public Release · build smooth-countdown                    ║
+// ║  DTG ENGINE — Public Release · build alerts-fix                          ║
 // ║  Single Entry Model (EM1) · Multi-TF bias · Auto-discount zones          ║
 // ║  3-Step System: Bias → Zone Touch → Signal                               ║
 // ║  Single unified alert() — covers Signal · Triggered · Invalid in one     ║
@@ -704,19 +704,27 @@ noSignal_Bias = (trade.status == "Scanning" or trade.status == "None") ? H4_c : 
 // alertconditions kept below for backward compatibility — members with old
 // per-event alerts continue to work unchanged.
 
-// Detect the three transitions on this bar. For Signal we use validBuy/Sell
-// directly (only fires on the actual signal-fire bar). For Triggered/Invalid
-// we use trade.status[1] history operator so the alert fires exactly once
-// at the moment of state transition rather than every bar while the trade
-// lingers in that state.
-// Pine v6 disallows the history-reference operator directly on UDT fields
-// ('trade.status[1]'); have to reference the previous-bar OBJECT first.
-// On bar 0 there is no previous object — (trade[1]) returns na — so we
-// guard with na() and substitute a benign placeholder string. This
-// matters because '.status' on a na UDT throws 'Cannot access field of
-// an undefined object' at runtime.
-TradeState prevTrade = trade[1]
-string prevStatus    = na(prevTrade) ? "None" : prevTrade.status
+// Detect the three transitions on this bar.
+//
+//   For Signal — validBuy/validSell already only fire on the signal bar
+//                so no transition tracking needed.
+//   For Triggered / Invalid — we need the previous bar's trade.status to
+//                detect the flip-bar.
+//
+// CRITICAL: 'var TradeState trade = TradeState.new()' is a single mutable
+// object shared across all bars. History-reference operators ('[1]' on
+// the object OR on its fields) do NOT give per-bar snapshots of var-UDT
+// fields — both forms read the CURRENT field value because there's only
+// one object reference. That made earlier 'prevStatus = (trade[1]).status'
+// evaluate to trade.status on every bar, so 'X != X' was always false and
+// emit_triggered / emit_invalid never fired.
+//
+// Fix: copy trade.status into a plain 'string' series each bar. Plain-typed
+// series DO have genuine per-bar history, so 'statusSeries[1]' returns the
+// previous bar's value. nz() on a string would error in Pine v6, so we
+// guard the bar-0 case via 'bar_index > 0' before reading [1].
+string statusSeries = trade.status
+string prevStatus   = bar_index > 0 ? statusSeries[1] : "None"
 bool emit_signal    = validBuy or validSell
 bool emit_triggered = trade.status == "Triggered" and prevStatus != "Triggered"
 bool emit_invalid   = trade.status == "Invalid"   and prevStatus != "Invalid"
