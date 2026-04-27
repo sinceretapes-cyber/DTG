@@ -1731,16 +1731,21 @@ if showTable and barstate.islast
     // otherwise MM:SS. Clears if the input is off or the value can't be computed.
     if showBiasCountdown
         // Bias can flip when ANY of 4H/6H/8H/12H/D/W closes (whichever is soonest).
-        // Pick the minimum time_close - time across the six TFs.
-        // Use a safe large number for any TF that returns na (shouldn't happen but
-        // guard just in case).
+        // Pick the minimum time_close(tf) - timenow across the six TFs.
+        //
+        // CRITICAL: use 'timenow' (real wallclock), NOT 'time' (current bar's
+        // open time). On a 1H chart 'time' is up to 1h stale; on a 4H chart
+        // up to 4h stale — produced different countdowns per chart TF even
+        // though the actual time to the next HTF close is identical. 'timenow'
+        // is independent of chart TF so the countdown reads correctly on
+        // every timeframe.
         int bigMs = 10 * 365 * 24 * 60 * 60 * 1000
-        int d_4h  = nz(time_close("240") - time, bigMs)
-        int d_6h  = nz(time_close("360") - time, bigMs)
-        int d_8h  = nz(time_close("480") - time, bigMs)
-        int d_12h = nz(time_close("720") - time, bigMs)
-        int d_D   = nz(time_close("D")   - time, bigMs)
-        int d_W   = nz(time_close("W")   - time, bigMs)
+        int d_4h  = nz(time_close("240") - timenow, bigMs)
+        int d_6h  = nz(time_close("360") - timenow, bigMs)
+        int d_8h  = nz(time_close("480") - timenow, bigMs)
+        int d_12h = nz(time_close("720") - timenow, bigMs)
+        int d_D   = nz(time_close("D")   - timenow, bigMs)
+        int d_W   = nz(time_close("W")   - timenow, bigMs)
         int soonestMs = math.min(math.min(math.min(d_4h, d_6h), math.min(d_8h, d_12h)), math.min(d_D, d_W))
         // Explicit int() + subtract-multiply decomposition to guarantee integer
         // truncation on every step. Pine v6 'int / int' can return series float
