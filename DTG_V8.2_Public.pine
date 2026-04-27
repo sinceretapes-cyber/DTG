@@ -2,7 +2,7 @@
 indicator("DTG V8.2", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500, dynamic_requests=true)
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
-// ║  DTG ENGINE — Public Release · build sleek-navy                          ║
+// ║  DTG ENGINE — Public Release · build sleek-navy-compact                  ║
 // ║  Single Entry Model (EM1) · Multi-TF bias · Auto-discount zones          ║
 // ║  3-Step System: Bias → Zone Touch → Signal                               ║
 // ║  Single unified alert() — covers Signal · Triggered · Invalid in one     ║
@@ -1077,15 +1077,13 @@ if showTable and barstate.islast
     //   Row 14    — Rescan countdown
     var table main_table = table.new(position.top_right, 3, 15, bgcolor=baseBG, border_color=frameBG, border_width=0, frame_color=frameBG, frame_width=1)
 
-    // Row 0 — Title bar: DTG ENGINE · V8.2
-    table.cell(main_table, 0, 0, "", bgcolor=titleBG)
-    table.cell(main_table, 1, 0, "DTG ENGINE", text_color=brandTxt, text_size=tblSize, bgcolor=titleBG, text_halign=text.align_right)
-    table.cell(main_table, 2, 0, "V8.2",       text_color=versionTxt, text_size=tblSize, bgcolor=titleBG, text_halign=text.align_left)
+    // Row 0 — Title bar: DTG ENGINE · V8.2 (merged across all 3 cols, centered)
+    table.cell(main_table, 0, 0, "DTG ENGINE · V8.2", text_color=brandTxt, text_size=tblSize, bgcolor=titleBG, text_halign=text.align_center)
+    table.merge_cells(main_table, 0, 0, 2, 0)
 
-    // Row 1 — Section header: 3-STEP SYSTEM
-    table.cell(main_table, 0, 1, "", bgcolor=sectionBG)
-    table.cell(main_table, 1, 1, "3-STEP SYSTEM", text_color=sectionTxt, text_size=tblSize, bgcolor=sectionBG, text_halign=text.align_right)
-    table.cell(main_table, 2, 1, "", bgcolor=sectionBG)
+    // Row 1 — Section header: 3-STEP SYSTEM (merged + centered + compact size)
+    table.cell(main_table, 0, 1, "3-STEP SYSTEM", text_color=sectionTxt, text_size=size.small, bgcolor=sectionBG, text_halign=text.align_center)
+    table.merge_cells(main_table, 0, 1, 2, 1)
 
     // Row 2 — Bias step
     table.cell(main_table, 0, 2, step1Glyph, text_color=step1Txt, text_size=tblSize, bgcolor=step1Bg, text_halign=text.align_center)
@@ -1106,10 +1104,9 @@ if showTable and barstate.islast
 
     // Section: STATUS (rows 5-6) — visible only when scanning. Header + System row.
     if not showTrade
-        // Row 5 — section header
-        table.cell(main_table, 0, 5, "", bgcolor=sectionBG)
-        table.cell(main_table, 1, 5, "STATUS", text_color=sectionTxt, text_size=tblSize, bgcolor=sectionBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 5, "", bgcolor=sectionBG)
+        // Row 5 — section header (merged + centered + compact)
+        table.cell(main_table, 0, 5, "STATUS", text_color=sectionTxt, text_size=size.small, bgcolor=sectionBG, text_halign=text.align_center)
+        table.merge_cells(main_table, 0, 5, 2, 5)
         // Row 6 — system state
         table.cell(main_table, 0, 6, "", bgcolor=baseBG)
         table.cell(main_table, 1, 6, "System", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
@@ -1147,10 +1144,9 @@ if showTable and barstate.islast
         float lotVal_d = rPL_d > 0 ? math.max(0.01, math.round(riskUSD_d / rPL_d, isCrypto ? 4 : 2)) : 0.01
 
         color tradeCellBG = color.new(trade.bias, 55)
-        // Row 7 — section header
-        table.cell(main_table, 0, 7, "", bgcolor=sectionBG)
-        table.cell(main_table, 1, 7, "LIVE TRADE", text_color=sectionTxt, text_size=tblSize, bgcolor=sectionBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 7, "", bgcolor=sectionBG)
+        // Row 7 — section header (merged + centered + compact)
+        table.cell(main_table, 0, 7, "LIVE TRADE", text_color=sectionTxt, text_size=size.small, bgcolor=sectionBG, text_halign=text.align_center)
+        table.merge_cells(main_table, 0, 7, 2, 7)
 
         // Row 8 — Entry
         table.cell(main_table, 0, 8, "", bgcolor=baseBG)
@@ -1190,10 +1186,9 @@ if showTable and barstate.islast
 
     // Section: BIAS RECALC (rows 13-14) — header + countdown.
     if showBiasCountdown
-        // Row 13 — section header
-        table.cell(main_table, 0, 13, "", bgcolor=sectionBG)
-        table.cell(main_table, 1, 13, "BIAS RECALC", text_color=sectionTxt, text_size=tblSize, bgcolor=sectionBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 13, "", bgcolor=sectionBG)
+        // Row 13 — section header (merged + centered + compact)
+        table.cell(main_table, 0, 13, "BIAS RECALC", text_color=sectionTxt, text_size=size.small, bgcolor=sectionBG, text_halign=text.align_center)
+        table.merge_cells(main_table, 0, 13, 2, 13)
 
         // Row 14 — countdown.
         // Bias can flip when ANY of 4H/6H/8H/12H/D/W closes (soonest wins).
