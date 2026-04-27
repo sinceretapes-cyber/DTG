@@ -627,6 +627,18 @@ f_LABEL_truncate(DTG_Signal, showMax)
 alertcondition(validBuy or validSell,  title="System Signal",  message="DTG V8: Valid SYSTEM signal. Check dashboard for trade details.")
 alertcondition(rawBuy or rawSell,      title="Pattern Signal", message="DTG V8: EM1 pattern detected (system rules not applied).")
 
+// Lifecycle alerts — populated from §12 transitions below. We detect when
+// trade.status flips from one bar to the next using the [1] history operator,
+// so the alertcondition fires exactly once per transition (not every bar
+// while the trade remains in that state).
+//
+//   System Triggered — Active → Triggered (price crossed the entry level)
+//   System Invalid   — Active → Invalid   (entry never hit; setup expired)
+bool aSysTriggered = trade.status == "Triggered" and trade.status[1] != "Triggered"
+bool aSysInvalid   = trade.status == "Invalid"   and trade.status[1] != "Invalid"
+alertcondition(aSysTriggered, title="System Triggered", message="DTG V8: System signal TRIGGERED — price hit entry. Check dashboard for SL/TP levels.")
+alertcondition(aSysInvalid,   title="System Invalid",   message="DTG V8: System signal INVALID — entry not hit, setup expired.")
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §12  TRADE STATUS MACHINE
