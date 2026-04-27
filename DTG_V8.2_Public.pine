@@ -2,7 +2,7 @@
 indicator("DTG V8.2", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500, dynamic_requests=true)
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
-// ║  DTG DZ STRATEGY — Public Release · build alerts-clean                   ║
+// ║  DTG DZ STRATEGY — Public Release · build setup-guide                    ║
 // ║  Single Entry Model (EM1) · Multi-TF bias · Auto-discount zones          ║
 // ║  3-Step System: Bias → Zone Touch → Signal                               ║
 // ║  Single unified alert() — covers Signal · Triggered · Invalid in one     ║
@@ -77,6 +77,10 @@ bear_fill     = input.color(color.new(color.red, 80),   "Bear Fill",   inline="V
 bull_border   = input.color(color.green,                "Bull Border", inline="V_Border", group=grpVis)
 bear_border   = input.color(color.red,                  "Bear Border", inline="V_Border", group=grpVis)
 line_width    = input.int(1, "Zone Mid Line", minval=1, maxval=6, group=grpVis)
+// Alert Setup Guide — small instructional banner shown bottom-left until
+// member dismisses it via this checkbox. Default ON for new chart loads so
+// first-time users see it.
+showSetupGuide = input.bool(true, "Show Alert Setup Guide", group=grpVis, tooltip="First-run instructions for setting up V8.2 alerts on 15m + 30m. Untick this checkbox once you've created both alerts to dismiss the on-chart panel.")
 
 // ── RISK MANAGEMENT ──
 grpRisk       = "Risk Management"
@@ -1194,6 +1198,42 @@ if barstate.islast
         table.cell(warn_table, 0, 0, "⚠ Caution — V8 Unlocked removes all 4 system filters. Expect more signals but unverified win rate. Use at your own risk.", text_color=color.white, text_size=size.small, bgcolor=color.new(#FF1744, 70), text_halign=text.align_center)
     else
         table.clear(warn_table, 0, 0, 0, 0)
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §18c  ALERT SETUP GUIDE — first-run instructional banner
+// ─────────────────────────────────────────────────────────────────────────────
+// Pine cannot programmatically create TradingView alerts (platform limit) —
+// this banner instead walks first-time users through the manual setup,
+// emphasising that they need TWO alerts (one per chart timeframe: 15m +
+// 30m). Members tick off 'Show Alert Setup Guide' in the inputs once
+// they're done to hide the panel forever on that chart.
+//
+// Anchored bottom-left so it doesn't collide with:
+//   • Main dashboard       (top-right)
+//   • V8 Unlocked warning  (bottom-center)
+//
+// Same fully-transparent table trick as the warning banner — no frame
+// leak when cleared.
+
+var table guide_table = table.new(position.bottom_left, 1, 6, bgcolor=color.new(color.white, 100), border_color=color.new(color.white, 100), border_width=0, frame_color=color.new(color.white, 100), frame_width=0)
+if barstate.islast
+    if showSetupGuide
+        color guide_titleBG = color.new(#0a0a1a, 10)
+        color guide_bodyBG  = color.new(#111122, 15)
+        color guide_emphBG  = color.new(#00E5FF, 70)
+        color guide_titleTxt = color.new(#00E5FF, 0)
+        color guide_bodyTxt  = color.new(#e8e8f0, 0)
+
+        table.cell(guide_table, 0, 0, "⚙ ALERT SETUP — read me first", text_color=guide_titleTxt, text_size=size.small,  bgcolor=guide_titleBG, text_halign=text.align_left)
+        table.cell(guide_table, 0, 1, "Set up 2 separate alerts — one on the 15m chart and one on the 30m chart.", text_color=guide_bodyTxt, text_size=size.small,  bgcolor=guide_bodyBG, text_halign=text.align_left)
+        table.cell(guide_table, 0, 2, "1. Right-click chart → Add Alert", text_color=guide_bodyTxt, text_size=size.small, bgcolor=guide_bodyBG, text_halign=text.align_left)
+        table.cell(guide_table, 0, 3, "2. Condition: DTG V8.2 → Any alert() function call", text_color=guide_bodyTxt, text_size=size.small, bgcolor=guide_bodyBG, text_halign=text.align_left)
+        table.cell(guide_table, 0, 4, "3. Interval: choose 15 minutes (then repeat for 30 minutes)", text_color=guide_bodyTxt, text_size=size.small, bgcolor=guide_emphBG, text_halign=text.align_left)
+        table.cell(guide_table, 0, 5, "Hide this guide: untick 'Show Alert Setup Guide' in the indicator inputs.", text_color=guide_bodyTxt, text_size=size.tiny, bgcolor=guide_bodyBG, text_halign=text.align_left)
+    else
+        for r = 0 to 5
+            table.clear(guide_table, 0, r, 0, r)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
