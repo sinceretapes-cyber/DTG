@@ -2,7 +2,7 @@
 indicator("DTG V8.2", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500, dynamic_requests=true)
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
-// ║  DTG DZ STRATEGY — Public Release · build setup-guide                    ║
+// ║  DTG DZ STRATEGY — Public Release · build setup-guide-v2                 ║
 // ║  Single Entry Model (EM1) · Multi-TF bias · Auto-discount zones          ║
 // ║  3-Step System: Bias → Zone Touch → Signal                               ║
 // ║  Single unified alert() — covers Signal · Triggered · Invalid in one     ║
@@ -1216,7 +1216,7 @@ if barstate.islast
 // Same fully-transparent table trick as the warning banner — no frame
 // leak when cleared.
 
-var table guide_table = table.new(position.bottom_left, 1, 6, bgcolor=color.new(color.white, 100), border_color=color.new(color.white, 100), border_width=0, frame_color=color.new(color.white, 100), frame_width=0)
+var table guide_table = table.new(position.bottom_left, 1, 7, bgcolor=color.new(color.white, 100), border_color=color.new(color.white, 100), border_width=0, frame_color=color.new(color.white, 100), frame_width=0)
 if barstate.islast
     if showSetupGuide
         color guide_titleBG = color.new(#0a0a1a, 10)
@@ -1230,9 +1230,10 @@ if barstate.islast
         table.cell(guide_table, 0, 2, "1. Right-click chart → Add Alert", text_color=guide_bodyTxt, text_size=size.small, bgcolor=guide_bodyBG, text_halign=text.align_left)
         table.cell(guide_table, 0, 3, "2. Condition: DTG V8.2 → Any alert() function call", text_color=guide_bodyTxt, text_size=size.small, bgcolor=guide_bodyBG, text_halign=text.align_left)
         table.cell(guide_table, 0, 4, "3. Interval: choose 15 minutes (then repeat for 30 minutes)", text_color=guide_bodyTxt, text_size=size.small, bgcolor=guide_emphBG, text_halign=text.align_left)
-        table.cell(guide_table, 0, 5, "Hide this guide: untick 'Show Alert Setup Guide' in the indicator inputs.", text_color=guide_bodyTxt, text_size=size.tiny, bgcolor=guide_bodyBG, text_halign=text.align_left)
+        table.cell(guide_table, 0, 5, "Both alerts run forever and adapt automatically when you change the System Preset.", text_color=guide_bodyTxt, text_size=size.small, bgcolor=guide_bodyBG, text_halign=text.align_left)
+        table.cell(guide_table, 0, 6, "Hide this guide: untick 'Show Alert Setup Guide' in the indicator inputs.", text_color=guide_bodyTxt, text_size=size.tiny, bgcolor=guide_bodyBG, text_halign=text.align_left)
     else
-        for r = 0 to 5
+        for r = 0 to 6
             table.clear(guide_table, 0, r, 0, r)
 
 
