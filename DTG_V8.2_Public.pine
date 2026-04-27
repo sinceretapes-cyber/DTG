@@ -2,9 +2,10 @@
 indicator("DTG V8.2", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500, dynamic_requests=true)
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
-// ║  DTG DZ STRATEGY — Public Release                                        ║
+// ║  DTG DZ STRATEGY — Public Release · build dc9c86a                        ║
 // ║  Single Entry Model (EM1) · Multi-TF bias · Auto-discount zones          ║
 // ║  3-Step System: Bias → Zone Touch → Signal                               ║
+// ║  Unified alert() emitter · Preset-tagged messages · UDT history-ref fix  ║
 // ╚═══════════════════════════════════════════════════════════════════════════╝
 
 
