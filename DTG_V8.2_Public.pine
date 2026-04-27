@@ -2,11 +2,11 @@
 indicator("DTG V8.2", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500, dynamic_requests=true)
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
-// ║  DTG DZ STRATEGY — Public Release · build e5e8866                        ║
+// ║  DTG DZ STRATEGY — Public Release · build alerts-clean                   ║
 // ║  Single Entry Model (EM1) · Multi-TF bias · Auto-discount zones          ║
 // ║  3-Step System: Bias → Zone Touch → Signal                               ║
-// ║  Unified alert() emitter · Preset-tagged messages                        ║
-// ║  v6 UDT history-ref fix · na guard on bar 0                              ║
+// ║  Single unified alert() — covers Signal · Triggered · Invalid in one     ║
+// ║  TradingView alert ('Any alert() function call')                         ║
 // ╚═══════════════════════════════════════════════════════════════════════════╝
 
 
@@ -590,10 +590,6 @@ bool em1_allowed      = trade.status != "Triggered" and em1_systemReady
 bool validBuy  = buySignal and enableEM1 and em1_allowed and showLabel != "Off"
 bool validSell = sellSignal and enableEM1 and em1_allowed and showLabel != "Off"
 
-// Raw pattern signals (no system gate) — for alertcondition
-bool rawBuy  = buySignal and enableEM1 and trade.status != "Triggered" and overallBias == 1
-bool rawSell = sellSignal and enableEM1 and trade.status != "Triggered" and overallBias == -1
-
 if validBuy
     trade.bar        := bar_index
     trade.triggerBar := na
@@ -740,13 +736,6 @@ if emit_triggered
     alert(presetTag + "DTG V8 — " + trgDir + " TRIGGERED on " + syminfo.ticker + " " + TF_txt + " Price hit entry " + str.tostring(trade.entry, format.mintick) + " · SL " + str.tostring(trade.sl, format.mintick) + " · TP2 " + str.tostring(trade.tp2, format.mintick), alert.freq_once_per_bar)
 if emit_invalid
     alert(presetTag + "DTG V8 — Setup INVALID on " + syminfo.ticker + " " + TF_txt + " Entry not hit, setup expired.", alert.freq_once_per_bar)
-
-
-// ── Backward-compatible alertconditions (old-style per-event alerts) ──
-alertcondition(emit_signal,    title="System Signal",    message="DTG V8: Valid SYSTEM signal. Check dashboard for trade details.")
-alertcondition(rawBuy or rawSell, title="Pattern Signal", message="DTG V8: EM1 pattern detected (system rules not applied).")
-alertcondition(emit_triggered, title="System Triggered", message="DTG V8: System signal TRIGGERED — price hit entry. Check dashboard for SL/TP levels.")
-alertcondition(emit_invalid,   title="System Invalid",   message="DTG V8: System signal INVALID — entry not hit, setup expired.")
 
 
 // ─────────────────────────────────────────────────────────────────────────────
