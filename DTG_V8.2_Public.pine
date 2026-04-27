@@ -709,9 +709,13 @@ noSignal_Bias = (trade.status == "Scanning" or trade.status == "None") ? H4_c : 
 // at the moment of state transition rather than every bar while the trade
 // lingers in that state.
 // Pine v6 disallows the history-reference operator directly on UDT fields
-// ('trade.status[1]'); have to wrap the UDT instance in parens first so we
-// reference the previous-bar object, then read the field on it.
-string prevStatus = (trade[1]).status
+// ('trade.status[1]'); have to reference the previous-bar OBJECT first.
+// On bar 0 there is no previous object — (trade[1]) returns na — so we
+// guard with na() and substitute a benign placeholder string. This
+// matters because '.status' on a na UDT throws 'Cannot access field of
+// an undefined object' at runtime.
+TradeState prevTrade = trade[1]
+string prevStatus    = na(prevTrade) ? "None" : prevTrade.status
 bool emit_signal    = validBuy or validSell
 bool emit_triggered = trade.status == "Triggered" and prevStatus != "Triggered"
 bool emit_invalid   = trade.status == "Invalid"   and prevStatus != "Invalid"
