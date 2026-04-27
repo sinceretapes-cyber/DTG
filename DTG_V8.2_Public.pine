@@ -2,7 +2,7 @@
 indicator("DTG V8.2", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500, dynamic_requests=true)
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
-// ║  DTG ENGINE — Public Release · build sleek-navy-compact                  ║
+// ║  DTG ENGINE — Public Release · build smooth-countdown                    ║
 // ║  Single Entry Model (EM1) · Multi-TF bias · Auto-discount zones          ║
 // ║  3-Step System: Bias → Zone Touch → Signal                               ║
 // ║  Single unified alert() — covers Signal · Triggered · Invalid in one     ║
@@ -1203,13 +1203,20 @@ if showTable and barstate.islast
         int d_D   = nz(time_close("D")   - timenow, bigMs)
         int d_W   = nz(time_close("W")   - timenow, bigMs)
         int soonestMs = math.min(math.min(math.min(d_4h, d_6h), math.min(d_8h, d_12h)), math.min(d_D, d_W))
-        // Force integer truncation on every step — Pine v6 'int / int' can leak
-        // a fractional series float in some code paths.
-        int ccSec  = int(math.max(0, math.floor(soonestMs / 1000)))
-        int ccHr   = int(math.floor(ccSec / 3600))
-        int ccRem  = ccSec - ccHr * 3600
-        int ccMin  = int(math.floor(ccRem / 60))
-        int ccSs   = ccRem - ccMin * 60
+        // Round-down seconds to 5-second buckets so the countdown appears to
+        // tick smoothly every 5s regardless of how often Pine re-runs the
+        // script (Pine only updates on ticks; quiet markets produce 2-5s
+        // gaps between ticks, making a per-second countdown look jittery
+        // and 'frozen'). Rounding to 5s buckets gives a predictable
+        // '00:35 → 00:30 → 00:25' cadence even when ticks are sparse.
+        // Force integer truncation on every step — Pine v6 'int / int' can
+        // leak a fractional series float in some code paths.
+        int ccSecRaw   = int(math.max(0, math.floor(soonestMs / 1000)))
+        int ccSec      = (ccSecRaw / 5) * 5      // floor to nearest 5s
+        int ccHr       = int(math.floor(ccSec / 3600))
+        int ccRem      = ccSec - ccHr * 3600
+        int ccMin      = int(math.floor(ccRem / 60))
+        int ccSs       = ccRem - ccMin * 60
         string ccTxt = ccHr > 0 ? str.tostring(ccHr) + "h " + str.tostring(ccMin) + "m" : str.tostring(ccMin) + ":" + (ccSs < 10 ? "0" : "") + str.tostring(ccSs)
         color  ccBG  = ccHr == 0 and ccMin < 15 ? color.new(#00d4ff, 70) : color.new(#3a4a60, 60)
         table.cell(main_table, 0, 14, "", bgcolor=baseBG)
