@@ -944,9 +944,11 @@ if trade.status == "Invalid"
 
 // Triggered = live trade. Only exits on TP2, SL, or BE (entry) hit.
 // V8.1 FIX #1: wasTP1hit snapshot prevents same-bar TP1+BE race.
-// V8.1 FIX #2: gate with bar_index > trade.triggerBar — skip the trigger bar
-//              so a pre-trigger wick through SL isn't counted as a loss.
-if trade.status == "Triggered" and bar_index > nz(trade.triggerBar)
+// V8.2 FIX: gate with bar_index > trade.bar (NOT trade.triggerBar) — skip
+//           exits ONLY on the signal bar itself. Previous guard was over-
+//           broad and caused trades to freeze as Triggered when trigger
+//           and SL happened same-bar on any bar after the signal bar.
+if trade.status == "Triggered" and bar_index > nz(trade.bar)
     bool wasTP1hit = trade.tp1hit
     bool checkTP1  = (trade.bias == buy_c and high > trade.tp1) or (trade.bias == sell_c and low < trade.tp1)
     if checkTP1
@@ -1161,39 +1163,17 @@ if new_tf
         if not na(fib_line)
             line.delete(fib_line)
 
-        bool  is_bull  = tf_close > tf_open
-        bool  is_bear  = tf_close < tf_open
-        float tf_range = tf_high - tf_low
+        // Manual zone reuses the same f_discountZone() math as the auto-
+        // escalate path so manual and auto zones are identical — only the
+        // TF selection differs (algorithm vs user).
+        int   candleBias = tf_close > tf_open ? 1 : tf_close < tf_open ? -1 : 0
+        [tf_zt, tf_zb]   = f_discountZone(tf_low, tf_high, candleBias)
 
-        float bull_p05  = tf_low + tf_range * 0.50
-        float bull_p618 = tf_low + tf_range * 0.382
-        float bull_p75  = tf_low + tf_range * 0.25
-
-        float bear_p05  = tf_high - tf_range * 0.50
-        float bear_p618 = tf_high - tf_range * 0.382
-        float bear_p75  = tf_high - tf_range * 0.25
-
-        float a          = na
-        float b          = na
-        float mid_price  = na
-        color fill_col   = na
-        color border_col = na
-
-        if is_bull
-            a          := bull_p05
-            b          := bull_p75
-            mid_price  := bull_p618
-            fill_col   := bull_fill
-            border_col := bull_border
-        else if is_bear
-            a          := bear_p05
-            b          := bear_p75
-            mid_price  := bear_p618
-            fill_col   := bear_fill
-            border_col := bear_border
-
-        float top_price    = math.max(a, b)
-        float bottom_price = math.min(a, b)
+        float top_price    = math.max(tf_zt, tf_zb)
+        float bottom_price = math.min(tf_zt, tf_zb)
+        float mid_price    = na(tf_zt) or na(tf_zb) ? na : math.avg(tf_zt, tf_zb)
+        color fill_col     = candleBias == 1 ? bull_fill : candleBias == -1 ? bear_fill : na
+        color border_col   = candleBias == 1 ? bull_border : candleBias == -1 ? bear_border : na
 
         if not na(top_price) and not na(bottom_price) and not na(mid_price)
             fib_box := box.new(left=tf_time_close, top=top_price, right=right_time, bottom=bottom_price, xloc=xloc.bar_time)
