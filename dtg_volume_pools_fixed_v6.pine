@@ -1,13 +1,22 @@
 //@version=6
-// DTG Volume Pools — Pine Script v6 port of the fixed v5 indicator.
-// All eight bug fixes from the v5 fixed version are preserved.
-// v6 changes worth noting in this port:
-//   * `//@version=6`
-//   * `switch` used for the timeframe mapping
-//   * Method syntax (`arr.size()`, `arr.get()`, etc.) used throughout
-//   * Boolean operators are short-circuit in v6, so `canUseLowerTf and ltfHigh.size() > 0`
-//     no longer needs an explicit `not na(ltfHigh)` guard
-//   * `var` declarations and `array<float>` typing are unchanged
+// DTG Volume Pools — Pine Script v6, alignment-conservative build.
+//
+// On a CLOSED bucket the VAH/VAL produced here is byte-identical to the
+// original script. The only behavioural change is what gets fed into the
+// in-progress bucket — the original captured chart-bar data on the *open*
+// tick (barstate.isnew) which on the live bar means H == L == open and a
+// near-empty LTF array. This version captures on barstate.isconfirmed so
+// the bucket sees the bar's final OHLCV and the full LTF sub-bar array.
+// That is what was producing the "sometimes the volume pool lands in the
+// wrong place" symptom in realtime; refreshing the chart re-ran every bar
+// as historical and "fixed" it.
+//
+// Kept changes:
+//   #1  Realtime bucket data captured at confirmed close (was open tick).
+//   #2  First partial bucket on chart load is not emitted as a profile.
+//
+// All other math (row geometry, half-open rows, value-area expansion,
+// tie-break direction) is left exactly as in the original.
 indicator("DTG Volume Pools (v6)", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
 
 profileTimeframe = input.string("4H", "Profile Timeframe", options = ["4H", "6H", "8H", "12H", "Daily", "Weekly"])
@@ -118,60 +127,72 @@ resolveGeometry(float rangeLow, float rangeHigh) =>
         ticksPerRow := math.abs(rowsWithFloor - ROW_SIZE) <= math.abs(rowsWithCeil - ROW_SIZE) ? floorTicks : ceilTicks
         rowCount    := math.max(1, int(math.ceil(totalTicks / ticksPerRow)))
 
+    // Original tick-grid quantization preserved so the row grid matches the
+    // built-in Volume Profile / fixed-range tools that anchor to mintick.
+    float profileBottom = bottomTick * syminfo.mintick
     float rowHeight     = ticksPerRow * syminfo.mintick
-    // FIX #5: quantize the profile bottom to the *row* grid (not the tick grid)
-    // so adjacent buckets share the same row boundaries.
-    float profileBottom = math.floor(rangeLow / rowHeight) * rowHeight
-    int   spanTicks     = int(math.ceil((rangeHigh - profileBottom) / syminfo.mintick))
-    rowCount := math.max(1, int(math.ceil(spanTicks / float(ticksPerRow))))
     [rowCount, rowHeight, profileBottom]
 
+// Verbatim port of the original v5 calculateValueArea — same expansion
+// order, same tie-break, same "last accepted" rollback when the running
+// total crosses the target.
 calculateValueArea(array<float> rowTotals, int pocIndex, float totalVolume) =>
-    int   rowCount     = rowTotals.size()
-    int   upperIndex   = pocIndex
-    int   lowerIndex   = pocIndex
-    float accumulated  = rowCount > 0 ? rowTotals.get(pocIndex) : 0.0
-    float targetVolume = totalVolume * VALUE_AREA_PCT / 100.0
+    int   rowCount          = rowTotals.size()
+    int   upperIndex        = pocIndex
+    int   lowerIndex        = pocIndex
+    float accumulated       = rowCount > 0 ? rowTotals.get(pocIndex) : 0.0
+    float targetVolume      = totalVolume * VALUE_AREA_PCT / 100.0
+    int   lastAcceptedUpper = upperIndex
+    int   lastAcceptedLower = lowerIndex
 
-    // FIX #3 & #6: keep expanding until we have crossed the target, *including*
-    // the crossing row. Stop early if there is no remaining volume in either
-    // direction (so the value area doesn't bleed into empty rows).
-    bool keepGoing = true
-    while keepGoing and accumulated < targetVolume
-        bool canGoUp   = upperIndex < rowCount - 1
-        bool canGoDown = lowerIndex > 0
+    while accumulated < targetVolume and (lowerIndex > 0 or upperIndex < rowCount - 1)
+        float nextUp   = upperIndex < rowCount - 1 ? rowTotals.get(upperIndex + 1) : -1.0
+        float nextDown = lowerIndex > 0            ? rowTotals.get(lowerIndex - 1) : -1.0
 
-        if not canGoUp and not canGoDown
-            keepGoing := false
-        else
-            float nextUp   = canGoUp   ? rowTotals.get(upperIndex + 1) : -1.0
-            float nextDown = canGoDown ? rowTotals.get(lowerIndex - 1) : -1.0
+        if nextUp > nextDown
+            upperIndex  += 1
+            accumulated += nextUp
+            if accumulated <= targetVolume
+                lastAcceptedUpper := upperIndex
+                lastAcceptedLower := lowerIndex
+        else if nextDown > nextUp
+            lowerIndex  -= 1
+            accumulated += nextDown
+            if accumulated <= targetVolume
+                lastAcceptedUpper := upperIndex
+                lastAcceptedLower := lowerIndex
+        else if nextUp >= 0
+            int distUp   = (upperIndex + 1) - pocIndex
+            int distDown = pocIndex - (lowerIndex - 1)
 
-            if math.max(nextUp, nextDown) <= 0.0
-                keepGoing := false
+            if distUp < distDown
+                upperIndex  += 1
+                accumulated += nextUp
+                if accumulated <= targetVolume
+                    lastAcceptedUpper := upperIndex
+                    lastAcceptedLower := lowerIndex
+            else if distDown < distUp
+                lowerIndex  -= 1
+                accumulated += nextDown
+                if accumulated <= targetVolume
+                    lastAcceptedUpper := upperIndex
+                    lastAcceptedLower := lowerIndex
             else
-                bool expandUp = false
-                if not canGoDown
-                    expandUp := true
-                else if not canGoUp
-                    expandUp := false
-                else if nextUp > nextDown
-                    expandUp := true
-                else if nextDown > nextUp
-                    expandUp := false
-                else
-                    int distUp   = (upperIndex + 1) - pocIndex
-                    int distDown = pocIndex - (lowerIndex - 1)
-                    expandUp := distUp <= distDown
+                upperIndex  += 1
+                accumulated += nextUp
+                if accumulated <= targetVolume
+                    lastAcceptedUpper := upperIndex
+                    lastAcceptedLower := lowerIndex
+        else if nextDown >= 0
+            lowerIndex  -= 1
+            accumulated += nextDown
+            if accumulated <= targetVolume
+                lastAcceptedUpper := upperIndex
+                lastAcceptedLower := lowerIndex
 
-                if expandUp
-                    upperIndex  += 1
-                    accumulated += nextUp
-                else
-                    lowerIndex  -= 1
-                    accumulated += nextDown
-
-    [lowerIndex, upperIndex]
+    int finalLower = accumulated > targetVolume ? lastAcceptedLower : lowerIndex
+    int finalUpper = accumulated > targetVolume ? lastAcceptedUpper : upperIndex
+    [finalLower, finalUpper]
 
 appendSamples(array<float> targetHighs, array<float> targetLows, array<float> targetVolumes,
               array<float> sourceHighs, array<float> sourceLows, array<float> sourceVolumes) =>
@@ -216,13 +237,11 @@ calculateProfile(float rangeLow, float rangeHigh,
             for rowIndex = 0 to rowCount - 1
                 float rowLow  = profileBottom + rowIndex * rowHeight
                 float rowHigh = rowLow + rowHeight
-                bool  isTopRow = rowIndex == rowCount - 1
 
-                // FIX #4: half-open interval [rowLow, rowHigh). Top row also
-                // includes its top edge so the highest tick is not lost.
+                // Original closed-closed row containment preserved so per-row
+                // totals (and therefore POC / VAH / VAL) match the original.
                 float overlap = math.min(sourceHigh, rowHigh) - math.max(sourceLow, rowLow)
-                bool  inRowRange = sourceHigh < rowHigh or (isTopRow and sourceHigh <= rowHigh)
-                bool  singlePriceHit = sourceRange == 0 and sourceHigh >= rowLow and inRowRange
+                bool  singlePriceHit = sourceRange == 0 and sourceHigh >= rowLow and sourceHigh <= rowHigh
 
                 if overlap > 0 or singlePriceHit
                     float allocatedVolume = sourceRange > 0 ? sourceVolume * overlap / sourceRange : sourceVolume
