@@ -944,17 +944,22 @@ if trade.status == "Invalid"
 
 // Triggered = live trade. Only exits on TP2, SL, or BE (entry) hit.
 // V8.1 FIX #1: wasTP1hit snapshot prevents same-bar TP1+BE race.
-// V8.2 FIX: gate with bar_index > trade.bar (NOT trade.triggerBar) — skip
-//           exits ONLY on the signal bar itself. Previous guard was over-
-//           broad and caused trades to freeze as Triggered when trigger
-//           and SL happened same-bar on any bar after the signal bar.
-if trade.status == "Triggered" and bar_index > nz(trade.bar)
+// V8.2 FIX: exits always evaluated. Pre-trigger-wick false losses are
+//          prevented by a targeted SL-only skip ONLY on the signal bar
+//          when the bar closed in profit direction (reliable signal
+//          that the SL wick was pre-trigger, not post-trigger).
+//          Previous blanket 'skip all exits on signal bar' guard
+//          silently missed legitimate post-trigger SL hits.
+bool onSignalBar       = bar_index == nz(trade.bar)
+bool barClosedInProfit = (trade.bias == buy_c and close > trade.entry) or (trade.bias == sell_c and close < trade.entry)
+bool skipSL_signalBar  = onSignalBar and barClosedInProfit
+if trade.status == "Triggered"
     bool wasTP1hit = trade.tp1hit
     bool checkTP1  = (trade.bias == buy_c and high > trade.tp1) or (trade.bias == sell_c and low < trade.tp1)
     if checkTP1
         trade.tp1hit := true
     bool hitTP2 = (trade.bias == sell_c and low < trade.tp2) or (trade.bias == buy_c and high > trade.tp2)
-    bool hitSL  = not wasTP1hit and ((trade.bias == sell_c and high > trade.sl) or (trade.bias == buy_c and low < trade.sl))
+    bool hitSL  = not wasTP1hit and not skipSL_signalBar and ((trade.bias == sell_c and high > trade.sl) or (trade.bias == buy_c and low < trade.sl))
     bool hitBE  = wasTP1hit and ((trade.bias == buy_c and low < trade.entry) or (trade.bias == sell_c and high > trade.entry))
     if hitTP2 or hitBE or hitSL
         if hitTP2
