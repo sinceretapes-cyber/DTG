@@ -2,7 +2,7 @@
 indicator("DTG V8.2", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500, dynamic_requests=true)
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
-// ║  DTG ENGINE — Public Release · build sl-post-trigger-fix                 ║
+// ║  DTG ENGINE — Public Release · build manual-zone-parity                  ║
 // ║  Single Entry Model (EM1) · Multi-TF bias · Auto-discount zones          ║
 // ║  3-Step System: Bias → Zone Touch → Signal                               ║
 // ║  Single unified alert() — covers Signal · Triggered · Invalid in one     ║
@@ -931,71 +931,49 @@ if barstate.islast and showHistory
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §17  ORIGINAL DISCOUNT ZONE BOX (draws when auto is off)
+// §17  MANUAL DISCOUNT ZONE BOX (drawn when Auto-Escalate is OFF)
 // ─────────────────────────────────────────────────────────────────────────────
+// Manual zone uses IDENTICAL data source + math + draw pattern as the auto
+// escalate path in §13. Only difference is TF selection: auto picks the
+// soonest valid TF, manual forces the user's chosen base_tf.
+//
+// Data fetch mirrors §8b exactly: tuple'd request.security with
+// lookahead_on + prev-bar OHLC, so we read the CURRENT forming HTF candle
+// (not the previous completed one — the old path used lookahead_off which
+// was the root cause of the zones differing from auto).
+//
+// Drawing pattern mirrors §13: fetch candle open time via native time(tf),
+// use time_close(tf) for the right edge, and redraw every barstate.islast
+// so the box always reflects the live HTF candle's levels.
 
-int   extend_bars = 50
-[tf_open, tf_high, tf_low, tf_close] = request.security(syminfo.tickerid, base_tf, [open[1], high[1], low[1], close[1]], barmerge.gaps_off, barmerge.lookahead_off)
-int   tf_time_open = request.security(syminfo.tickerid, base_tf, time[1], barmerge.gaps_off, barmerge.lookahead_off)
+[mt_open, mt_close, mt_high, mt_low] = request.security(syminfo.tickerid, base_tf, [open[1], close[1], high[1], low[1]], lookahead=barmerge.lookahead_on)
+int  mt_time_open  = time(base_tf)
+int  mt_time_close = time_close(base_tf)
 
-int  base_ms       = timeframe.in_seconds(base_tf) * 1000
-int  tf_time_close = tf_time_open + base_ms
-bool new_tf        = timeframe.change(base_tf)
+int  mt_candleBias = mt_close > mt_open ? 1 : mt_close < mt_open ? -1 : 0
+[mt_zt, mt_zb]     = f_discountZone(mt_low, mt_high, mt_candleBias)
 
 var box  fib_box  = na
 var line fib_line = na
 
-int right_time = tf_time_close + extend_bars * base_ms
-
-if new_tf
-    if not enableFib or autoDiscount
-        if not na(fib_box)
-            box.delete(fib_box)
-            fib_box := na
-        if not na(fib_line)
-            line.delete(fib_line)
-            fib_line := na
-    else
-        if not na(fib_box)
-            box.delete(fib_box)
-        if not na(fib_line)
-            line.delete(fib_line)
-
-        // Manual zone now reuses the SAME f_discountZone() math as the
-        // auto-escalate path (§13), so the zones are IDENTICAL — the only
-        // difference is that auto picks the best TF for you, manual lets
-        // you force a specific TF.
-        //
-        // f_discountZone returns [zt, zb] based on candle direction:
-        //   Bullish candle → buy-the-dip zone (upper half of range)
-        //   Bearish candle → sell-the-rally zone (lower half of range)
-        // Midline = simple average of top/bottom (matches auto version).
-        int   candleBias = tf_close > tf_open ? 1 : tf_close < tf_open ? -1 : 0
-        [tf_zt, tf_zb]   = f_discountZone(tf_low, tf_high, candleBias)
-
-        float top_price    = math.max(tf_zt, tf_zb)
-        float bottom_price = math.min(tf_zt, tf_zb)
-        float mid_price    = na(tf_zt) or na(tf_zb) ? na : math.avg(tf_zt, tf_zb)
-        color fill_col     = candleBias == 1 ? bull_fill : candleBias == -1 ? bear_fill : na
-        color border_col   = candleBias == 1 ? bull_border : candleBias == -1 ? bear_border : na
-
-        if not na(top_price) and not na(bottom_price) and not na(mid_price)
-            fib_box := box.new(left=tf_time_close, top=top_price, right=right_time, bottom=bottom_price, xloc=xloc.bar_time)
-            box.set_bgcolor(fib_box, fill_col)
-            box.set_border_color(fib_box, border_col)
-            box.set_border_width(fib_box, 1)
-
-            fib_line := line.new(x1=tf_time_close, y1=mid_price, x2=right_time, y2=mid_price, xloc=xloc.bar_time)
-            line.set_color(fib_line, border_col)
-            line.set_width(fib_line, line_width)
-
-if barstate.islast and autoDiscount
+if barstate.islast
+    // Always wipe existing drawings first — prevents stale boxes on preset /
+    // input toggle changes.
     if not na(fib_box)
         box.delete(fib_box)
         fib_box := na
     if not na(fib_line)
         line.delete(fib_line)
         fib_line := na
+
+    // Draw only when manual mode is active AND discount zones are on.
+    // Auto mode uses §13's autoBox — §17 stays empty so the two never collide.
+    if enableFib and not autoDiscount and mt_candleBias != 0 and not na(mt_zt) and not na(mt_zb) and not na(mt_time_open) and not na(mt_time_close)
+        color mt_fill   = mt_candleBias == 1 ? bull_fill : bear_fill
+        color mt_border = mt_candleBias == 1 ? bull_border : bear_border
+        float mt_mid    = math.avg(mt_zt, mt_zb)
+        fib_box  := box.new(mt_time_open, math.max(mt_zt, mt_zb), mt_time_close, math.min(mt_zt, mt_zb), xloc=xloc.bar_time, border_color=mt_border, bgcolor=mt_fill, border_width=1)
+        fib_line := line.new(mt_time_open, mt_mid, mt_time_close, mt_mid, xloc=xloc.bar_time, color=mt_border, width=line_width)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
