@@ -1,0 +1,408 @@
+//@version=6
+// DTG Volume Pools — Pine Script v6 port of the fixed v5 indicator.
+// All eight bug fixes from the v5 fixed version are preserved.
+// v6 changes worth noting in this port:
+//   * `//@version=6`
+//   * `switch` used for the timeframe mapping
+//   * Method syntax (`arr.size()`, `arr.get()`, etc.) used throughout
+//   * Boolean operators are short-circuit in v6, so `canUseLowerTf and ltfHigh.size() > 0`
+//     no longer needs an explicit `not na(ltfHigh)` guard
+//   * `var` declarations and `array<float>` typing are unchanged
+indicator("DTG Volume Pools (v6)", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
+
+profileTimeframe = input.string("4H", "Profile Timeframe", options = ["4H", "6H", "8H", "12H", "Daily", "Weekly"])
+poolBufferRows   = input.float(1.0, "Pool Buffer (Rows)", minval = 0.25, step = 0.25)
+bullPoolColor    = input.color(color.new(color.teal, 78), "Bullish Pool")
+bearPoolColor    = input.color(color.new(color.red,  78), "Bearish Pool")
+bullMidlineColor = input.color(color.new(color.teal,  0), "Bullish Midline")
+bearMidlineColor = input.color(color.new(color.red,   0), "Bearish Midline")
+
+const string ROWS_LAYOUT       = "Number of Rows"
+const int    ROW_SIZE          = 24
+const int    VALUE_AREA_PCT    = 70
+const string LOWER_TIMEFRAME   = "1"
+
+var array<float> bucketHighs   = array.new<float>()
+var array<float> bucketLows    = array.new<float>()
+var array<float> bucketVolumes = array.new<float>()
+
+var float bucketHigh                 = na
+var float bucketLow                  = na
+var int   previousBucketTime         = na
+var bool  isInitialized              = false
+var bool  hasFullBucketStarted       = false
+var label timeframeWarning           = na
+var float latestClosedVah            = na
+var float latestClosedVal            = na
+var float latestClosedRowHeight      = na
+var float latestClosedVahRowVolume   = na
+var float latestClosedValRowVolume   = na
+var float latestClosedTotalVolume    = na
+var float latestClosedRangeLow       = na
+var float latestClosedRangeHigh      = na
+var int   latestClosedBucketTime     = na
+var box   activePoolBox              = na
+var line  activePoolLine             = na
+var table debugTable                 = table.new(position.bottom_right, 2, 12, border_width = 1)
+
+array<float> ltfHigh   = na
+array<float> ltfLow    = na
+array<float> ltfVolume = na
+
+profileTimeframeString = switch profileTimeframe
+    "4H"     => "240"
+    "6H"     => "360"
+    "8H"     => "480"
+    "12H"    => "720"
+    "Daily"  => "1D"
+    "Weekly" => "1W"
+    =>          "240"
+
+profileTimeframeLabel = switch profileTimeframe
+    "Daily"  => "1D"
+    "Weekly" => "1W"
+    =>          profileTimeframe
+
+maxSupportedSeconds = timeframe.in_seconds(profileTimeframeString)
+chartSeconds        = timeframe.in_seconds()
+isSupportedChart    = not na(chartSeconds) and chartSeconds <= maxSupportedSeconds
+currentBucketTime   = time(profileTimeframeString)
+isNewBucket         = ta.change(currentBucketTime) != 0
+lowerTfSeconds      = timeframe.in_seconds(LOWER_TIMEFRAME)
+canUseLowerTf       = isSupportedChart and not na(lowerTfSeconds) and lowerTfSeconds < chartSeconds
+
+getClosedBull(simple string tf) =>
+    prevOpen  = request.security(syminfo.tickerid, tf, open[1],  lookahead = barmerge.lookahead_on)
+    prevClose = request.security(syminfo.tickerid, tf, close[1], lookahead = barmerge.lookahead_on)
+    prevClose > prevOpen ? 1 : 0
+
+fourHourBull   = getClosedBull("240")
+sixHourBull    = getClosedBull("360")
+eightHourBull  = getClosedBull("480")
+twelveHourBull = getClosedBull("720")
+dailyBull      = getClosedBull("1D")
+weeklyBull     = getClosedBull("1W")
+
+bullVotes      = fourHourBull + sixHourBull + eightHourBull + twelveHourBull + dailyBull + weeklyBull
+bearVotes      = 6 - bullVotes
+isBullishBias  = bullVotes >= 4
+isBearishBias  = bearVotes >= 4
+biasText       = isBullishBias ? "Bullish" : isBearishBias ? "Bearish" : "Neutral"
+
+ltfHigh   := request.security_lower_tf(syminfo.tickerid, LOWER_TIMEFRAME, high)
+ltfLow    := request.security_lower_tf(syminfo.tickerid, LOWER_TIMEFRAME, low)
+ltfVolume := request.security_lower_tf(syminfo.tickerid, LOWER_TIMEFRAME, volume)
+
+formatVolume(float value) =>
+    switch
+        value >= 1000000 => str.tostring(value / 1000000.0, "#.##") + "M"
+        value >= 1000    => str.tostring(value / 1000.0,    "#.##") + "K"
+        =>                  str.tostring(math.round(value))
+
+resolveGeometry(float rangeLow, float rangeHigh) =>
+    int   bottomTick = int(math.floor(rangeLow  / syminfo.mintick))
+    int   topTick    = int(math.ceil (rangeHigh / syminfo.mintick))
+    int   totalTicks = math.max(topTick - bottomTick, 1)
+    int   ticksPerRow = 1
+    int   rowCount    = 1
+
+    if ROWS_LAYOUT == "Ticks Per Row"
+        ticksPerRow := math.max(ROW_SIZE, 1)
+        rowCount    := math.max(1, int(math.ceil(totalTicks / ticksPerRow)))
+    else
+        float rawTicksPerRow = totalTicks / math.max(float(ROW_SIZE), 1.0)
+        int   floorTicks     = math.max(1, int(math.floor(rawTicksPerRow)))
+        int   ceilTicks      = math.max(1, int(math.ceil (rawTicksPerRow)))
+        int   rowsWithFloor  = int(math.ceil(totalTicks / floorTicks))
+        int   rowsWithCeil   = int(math.ceil(totalTicks / ceilTicks))
+        ticksPerRow := math.abs(rowsWithFloor - ROW_SIZE) <= math.abs(rowsWithCeil - ROW_SIZE) ? floorTicks : ceilTicks
+        rowCount    := math.max(1, int(math.ceil(totalTicks / ticksPerRow)))
+
+    float rowHeight     = ticksPerRow * syminfo.mintick
+    // FIX #5: quantize the profile bottom to the *row* grid (not the tick grid)
+    // so adjacent buckets share the same row boundaries.
+    float profileBottom = math.floor(rangeLow / rowHeight) * rowHeight
+    int   spanTicks     = int(math.ceil((rangeHigh - profileBottom) / syminfo.mintick))
+    rowCount := math.max(1, int(math.ceil(spanTicks / float(ticksPerRow))))
+    [rowCount, rowHeight, profileBottom]
+
+calculateValueArea(array<float> rowTotals, int pocIndex, float totalVolume) =>
+    int   rowCount     = rowTotals.size()
+    int   upperIndex   = pocIndex
+    int   lowerIndex   = pocIndex
+    float accumulated  = rowCount > 0 ? rowTotals.get(pocIndex) : 0.0
+    float targetVolume = totalVolume * VALUE_AREA_PCT / 100.0
+
+    // FIX #3 & #6: keep expanding until we have crossed the target, *including*
+    // the crossing row. Stop early if there is no remaining volume in either
+    // direction (so the value area doesn't bleed into empty rows).
+    bool keepGoing = true
+    while keepGoing and accumulated < targetVolume
+        bool canGoUp   = upperIndex < rowCount - 1
+        bool canGoDown = lowerIndex > 0
+
+        if not canGoUp and not canGoDown
+            keepGoing := false
+        else
+            float nextUp   = canGoUp   ? rowTotals.get(upperIndex + 1) : -1.0
+            float nextDown = canGoDown ? rowTotals.get(lowerIndex - 1) : -1.0
+
+            if math.max(nextUp, nextDown) <= 0.0
+                keepGoing := false
+            else
+                bool expandUp = false
+                if not canGoDown
+                    expandUp := true
+                else if not canGoUp
+                    expandUp := false
+                else if nextUp > nextDown
+                    expandUp := true
+                else if nextDown > nextUp
+                    expandUp := false
+                else
+                    int distUp   = (upperIndex + 1) - pocIndex
+                    int distDown = pocIndex - (lowerIndex - 1)
+                    expandUp := distUp <= distDown
+
+                if expandUp
+                    upperIndex  += 1
+                    accumulated += nextUp
+                else
+                    lowerIndex  -= 1
+                    accumulated += nextDown
+
+    [lowerIndex, upperIndex]
+
+appendSamples(array<float> targetHighs, array<float> targetLows, array<float> targetVolumes,
+              array<float> sourceHighs, array<float> sourceLows, array<float> sourceVolumes) =>
+    int n = sourceHighs.size()
+    if n > 0
+        for sampleIndex = 0 to n - 1
+            targetHighs  .push(sourceHighs  .get(sampleIndex))
+            targetLows   .push(sourceLows   .get(sampleIndex))
+            targetVolumes.push(sourceVolumes.get(sampleIndex))
+
+calculateProfile(float rangeLow, float rangeHigh,
+                 array<float> sourceHighs, array<float> sourceLows, array<float> sourceVolumes) =>
+    float computedVah          = na
+    float computedVal          = na
+    float computedRowHeight    = na
+    float computedVahRowVolume = na
+    float computedValRowVolume = na
+    float computedTotalVolume  = na
+
+    int sourceCount = sourceHighs.size()
+
+    if sourceCount > 0
+        float effectiveLow  = rangeLow
+        float effectiveHigh = rangeHigh
+
+        for sampleIndex = 0 to sourceCount - 1
+            effectiveLow  := math.min(effectiveLow,  sourceLows .get(sampleIndex))
+            effectiveHigh := math.max(effectiveHigh, sourceHighs.get(sampleIndex))
+
+        [rowCount, rowHeight, profileBottom] = resolveGeometry(effectiveLow, effectiveHigh)
+        array<float> rowTotals = array.new<float>(rowCount, 0.0)
+        float totalVolume = 0.0
+        float pocVolume   = 0.0
+        int   pocIndex    = 0
+
+        for sourceIndex = 0 to sourceCount - 1
+            float sourceHigh   = sourceHighs.get(sourceIndex)
+            float sourceLow    = sourceLows .get(sourceIndex)
+            float sourceVolume = nz(sourceVolumes.get(sourceIndex), 0.0)
+            float sourceRange  = sourceHigh - sourceLow
+
+            for rowIndex = 0 to rowCount - 1
+                float rowLow  = profileBottom + rowIndex * rowHeight
+                float rowHigh = rowLow + rowHeight
+                bool  isTopRow = rowIndex == rowCount - 1
+
+                // FIX #4: half-open interval [rowLow, rowHigh). Top row also
+                // includes its top edge so the highest tick is not lost.
+                float overlap = math.min(sourceHigh, rowHigh) - math.max(sourceLow, rowLow)
+                bool  singlePriceHit = sourceRange == 0
+                                       and sourceHigh >= rowLow
+                                       and (sourceHigh < rowHigh or (isTopRow and sourceHigh <= rowHigh))
+
+                if overlap > 0 or singlePriceHit
+                    float allocatedVolume = sourceRange > 0 ? sourceVolume * overlap / sourceRange
+                                                            : sourceVolume
+                    float newTotal = rowTotals.get(rowIndex) + allocatedVolume
+                    rowTotals.set(rowIndex, newTotal)
+                    totalVolume += allocatedVolume
+
+                    if newTotal > pocVolume
+                        pocVolume := newTotal
+                        pocIndex  := rowIndex
+
+        [valIndex, vahIndex]   = calculateValueArea(rowTotals, pocIndex, totalVolume)
+        computedVah            := profileBottom + (vahIndex + 1) * rowHeight
+        computedVal            := profileBottom + valIndex * rowHeight
+        computedRowHeight      := rowHeight
+        computedVahRowVolume   := rowTotals.get(vahIndex)
+        computedValRowVolume   := rowTotals.get(valIndex)
+        computedTotalVolume    := totalVolume
+
+    [computedVah, computedVal, computedRowHeight, computedVahRowVolume, computedValRowVolume, computedTotalVolume]
+
+if not isSupportedChart
+    if barstate.islast and na(timeframeWarning)
+        timeframeWarning := label.new(bar_index, high,
+              "Use this indicator on " + profileTimeframeLabel + " or lower.",
+              style     = label.style_label_down,
+              color     = color.new(color.orange, 0),
+              textcolor = color.white)
+else
+    if not na(timeframeWarning)
+        timeframeWarning.delete()
+        timeframeWarning := na
+
+    // FIX #1: bucket accumulation runs only on confirmed bars so that:
+    //   * `high`, `low`, `volume` are the bar's final values, and
+    //   * `request.security_lower_tf(...)` has its full sub-bar array.
+    if barstate.isconfirmed
+        // v6 short-circuits `and`, so the .size() call only runs when canUseLowerTf is true.
+        array<float> currentBarHighs   = canUseLowerTf and ltfHigh  .size() > 0 ? ltfHigh  .copy() : array.from(high)
+        array<float> currentBarLows    = canUseLowerTf and ltfLow   .size() > 0 ? ltfLow   .copy() : array.from(low)
+        array<float> currentBarVolumes = canUseLowerTf and ltfVolume.size() > 0 ? ltfVolume.copy() : array.from(nz(volume, 0.0))
+
+        if not isInitialized
+            previousBucketTime    := currentBucketTime
+            isInitialized         := true
+            hasFullBucketStarted  := false
+        else if isNewBucket
+            // FIX #2: only emit a snapshot if we have actually tracked a
+            // complete bucket (i.e. we started accumulating from a previous
+            // boundary, not from the chart's first bar).
+            int completedBucketTime = previousBucketTime
+            if hasFullBucketStarted and bucketHighs.size() > 0 and not na(bucketLow) and not na(bucketHigh)
+                [snapshotVah, snapshotVal, snapshotRowHeight, snapshotVahRowVolume, snapshotValRowVolume, snapshotTotalVolume] =
+                  calculateProfile(bucketLow, bucketHigh, bucketHighs, bucketLows, bucketVolumes)
+                latestClosedVah          := snapshotVah
+                latestClosedVal          := snapshotVal
+                latestClosedRowHeight    := snapshotRowHeight
+                latestClosedVahRowVolume := snapshotVahRowVolume
+                latestClosedValRowVolume := snapshotValRowVolume
+                latestClosedTotalVolume  := snapshotTotalVolume
+                latestClosedRangeLow     := bucketLow
+                latestClosedRangeHigh    := bucketHigh
+                latestClosedBucketTime   := completedBucketTime
+
+            bucketHighs  .clear()
+            bucketLows   .clear()
+            bucketVolumes.clear()
+
+            bucketHigh           := high
+            bucketLow            := low
+            previousBucketTime   := currentBucketTime
+            hasFullBucketStarted := true
+
+            appendSamples(bucketHighs, bucketLows, bucketVolumes,
+                          currentBarHighs, currentBarLows, currentBarVolumes)
+        else if hasFullBucketStarted
+            bucketHigh := na(bucketHigh) ? high : math.max(bucketHigh, high)
+            bucketLow  := na(bucketLow)  ? low  : math.min(bucketLow,  low)
+            appendSamples(bucketHighs, bucketLows, bucketVolumes,
+                          currentBarHighs, currentBarLows, currentBarVolumes)
+
+    int currentBucketOpenTime  = currentBucketTime
+    int currentBucketCloseTime = time_close(profileTimeframeString)
+
+    bool showBullPool = isBullishBias and not na(latestClosedVal)
+    bool showBearPool = isBearishBias and not na(latestClosedVah)
+
+    float  activePoolMid          = showBullPool ? latestClosedVal : showBearPool ? latestClosedVah : na
+    float  activePoolHalfBuffer   = math.max(nz(latestClosedRowHeight, syminfo.mintick) * poolBufferRows, syminfo.mintick)
+    color  activePoolFill         = showBullPool ? bullPoolColor : showBearPool ? bearPoolColor : na
+    color  activePoolLineColor    = showBullPool ? bullMidlineColor : showBearPool ? bearMidlineColor : na
+    float  activePoolRowVolume    = showBullPool ? latestClosedValRowVolume : showBearPool ? latestClosedVahRowVolume : na
+    string activePoolVolume       = not na(activePoolRowVolume) ? formatVolume(activePoolRowVolume) : ""
+
+    if not na(activePoolMid)
+        if na(activePoolBox)
+            activePoolBox := box.new(left         = currentBucketOpenTime,
+                                     top          = activePoolMid + activePoolHalfBuffer,
+                                     right        = currentBucketCloseTime,
+                                     bottom       = activePoolMid - activePoolHalfBuffer,
+                                     xloc         = xloc.bar_time,
+                                     bgcolor      = activePoolFill,
+                                     border_color = na,
+                                     text         = "Volume Pool\n" + activePoolVolume,
+                                     text_color   = color.white,
+                                     text_size    = size.small,
+                                     text_halign  = text.align_center,
+                                     text_valign  = text.align_center)
+        else
+            activePoolBox.set_left   (currentBucketOpenTime)
+            activePoolBox.set_right  (currentBucketCloseTime)
+            activePoolBox.set_top    (activePoolMid + activePoolHalfBuffer)
+            activePoolBox.set_bottom (activePoolMid - activePoolHalfBuffer)
+            activePoolBox.set_bgcolor(activePoolFill)
+            activePoolBox.set_text   ("Volume Pool\n" + activePoolVolume)
+
+        if na(activePoolLine)
+            activePoolLine := line.new(x1    = currentBucketOpenTime,  y1 = activePoolMid,
+                                       x2    = currentBucketCloseTime, y2 = activePoolMid,
+                                       xloc  = xloc.bar_time,
+                                       color = activePoolLineColor,
+                                       width = 2)
+        else
+            activePoolLine.set_x1   (currentBucketOpenTime)
+            activePoolLine.set_x2   (currentBucketCloseTime)
+            activePoolLine.set_y1   (activePoolMid)
+            activePoolLine.set_y2   (activePoolMid)
+            activePoolLine.set_color(activePoolLineColor)
+    else
+        if not na(activePoolBox)
+            activePoolBox.delete()
+            activePoolBox := na
+        if not na(activePoolLine)
+            activePoolLine.delete()
+            activePoolLine := na
+
+    if barstate.islast
+        color bullCell    = color.new(color.teal, 70)
+        color bearCell    = color.new(color.red,  70)
+        color neutralCell = color.new(color.gray, 75)
+        color panelBg     = color.new(color.black, 15)
+
+        debugTable.cell(0, 0, "TF",    text_color = color.white, bgcolor = panelBg)
+        debugTable.cell(1, 0, "State", text_color = color.white, bgcolor = panelBg)
+
+        debugTable.cell(0, 1, "4H",  text_color = color.white, bgcolor = panelBg)
+        debugTable.cell(1, 1, fourHourBull   == 1 ? "Bull" : "Bear", text_color = color.white, bgcolor = fourHourBull   == 1 ? bullCell : bearCell)
+
+        debugTable.cell(0, 2, "6H",  text_color = color.white, bgcolor = panelBg)
+        debugTable.cell(1, 2, sixHourBull    == 1 ? "Bull" : "Bear", text_color = color.white, bgcolor = sixHourBull    == 1 ? bullCell : bearCell)
+
+        debugTable.cell(0, 3, "8H",  text_color = color.white, bgcolor = panelBg)
+        debugTable.cell(1, 3, eightHourBull  == 1 ? "Bull" : "Bear", text_color = color.white, bgcolor = eightHourBull  == 1 ? bullCell : bearCell)
+
+        debugTable.cell(0, 4, "12H", text_color = color.white, bgcolor = panelBg)
+        debugTable.cell(1, 4, twelveHourBull == 1 ? "Bull" : "Bear", text_color = color.white, bgcolor = twelveHourBull == 1 ? bullCell : bearCell)
+
+        debugTable.cell(0, 5, "1D",  text_color = color.white, bgcolor = panelBg)
+        debugTable.cell(1, 5, dailyBull      == 1 ? "Bull" : "Bear", text_color = color.white, bgcolor = dailyBull      == 1 ? bullCell : bearCell)
+
+        debugTable.cell(0, 6, "1W",  text_color = color.white, bgcolor = panelBg)
+        debugTable.cell(1, 6, weeklyBull     == 1 ? "Bull" : "Bear", text_color = color.white, bgcolor = weeklyBull     == 1 ? bullCell : bearCell)
+
+        debugTable.cell(0, 7, "Votes", text_color = color.white, bgcolor = panelBg)
+        debugTable.cell(1, 7, str.tostring(bullVotes) + " Bull / " + str.tostring(bearVotes) + " Bear", text_color = color.white, bgcolor = panelBg)
+
+        debugTable.cell(0, 8, "Bias", text_color = color.white, bgcolor = panelBg)
+        debugTable.cell(1, 8, biasText, text_color = color.white, bgcolor = isBullishBias ? bullCell : isBearishBias ? bearCell : neutralCell)
+
+        debugTable.cell(0, 9, "Closed", text_color = color.white, bgcolor = panelBg)
+        debugTable.cell(1, 9, na(latestClosedBucketTime) ? "n/a" : str.format("{0,time,HH:mm}", latestClosedBucketTime), text_color = color.white, bgcolor = panelBg)
+
+        debugTable.cell(0, 10, "Range", text_color = color.white, bgcolor = panelBg)
+        debugTable.cell(1, 10, na(latestClosedRangeLow) ? "n/a" :
+                   str.tostring(latestClosedRangeLow,  format.mintick) + " — " +
+                   str.tostring(latestClosedRangeHigh, format.mintick),
+                   text_color = color.white, bgcolor = panelBg)
+
+        debugTable.cell(0, 11, "TotVol", text_color = color.white, bgcolor = panelBg)
+        debugTable.cell(1, 11, na(latestClosedTotalVolume) ? "n/a" : formatVolume(latestClosedTotalVolume),
+                   text_color = color.white, bgcolor = panelBg)
