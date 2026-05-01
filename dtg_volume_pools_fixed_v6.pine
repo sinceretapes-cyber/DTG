@@ -221,13 +221,11 @@ calculateProfile(float rangeLow, float rangeHigh,
                 // FIX #4: half-open interval [rowLow, rowHigh). Top row also
                 // includes its top edge so the highest tick is not lost.
                 float overlap = math.min(sourceHigh, rowHigh) - math.max(sourceLow, rowLow)
-                bool  singlePriceHit = sourceRange == 0
-                                       and sourceHigh >= rowLow
-                                       and (sourceHigh < rowHigh or (isTopRow and sourceHigh <= rowHigh))
+                bool  inRowRange = sourceHigh < rowHigh or (isTopRow and sourceHigh <= rowHigh)
+                bool  singlePriceHit = sourceRange == 0 and sourceHigh >= rowLow and inRowRange
 
                 if overlap > 0 or singlePriceHit
-                    float allocatedVolume = sourceRange > 0 ? sourceVolume * overlap / sourceRange
-                                                            : sourceVolume
+                    float allocatedVolume = sourceRange > 0 ? sourceVolume * overlap / sourceRange : sourceVolume
                     float newTotal = rowTotals.get(rowIndex) + allocatedVolume
                     rowTotals.set(rowIndex, newTotal)
                     totalVolume += allocatedVolume
@@ -277,8 +275,7 @@ else
             // boundary, not from the chart's first bar).
             int completedBucketTime = previousBucketTime
             if hasFullBucketStarted and bucketHighs.size() > 0 and not na(bucketLow) and not na(bucketHigh)
-                [snapshotVah, snapshotVal, snapshotRowHeight, snapshotVahRowVolume, snapshotValRowVolume, snapshotTotalVolume] =
-                  calculateProfile(bucketLow, bucketHigh, bucketHighs, bucketLows, bucketVolumes)
+                [snapshotVah, snapshotVal, snapshotRowHeight, snapshotVahRowVolume, snapshotValRowVolume, snapshotTotalVolume] = calculateProfile(bucketLow, bucketHigh, bucketHighs, bucketLows, bucketVolumes)
                 latestClosedVah          := snapshotVah
                 latestClosedVal          := snapshotVal
                 latestClosedRowHeight    := snapshotRowHeight
@@ -397,12 +394,11 @@ else
         debugTable.cell(0, 9, "Closed", text_color = color.white, bgcolor = panelBg)
         debugTable.cell(1, 9, na(latestClosedBucketTime) ? "n/a" : str.format("{0,time,HH:mm}", latestClosedBucketTime), text_color = color.white, bgcolor = panelBg)
 
+        string rangeText = na(latestClosedRangeLow) ? "n/a" : str.tostring(latestClosedRangeLow, format.mintick) + " — " + str.tostring(latestClosedRangeHigh, format.mintick)
+        string totVolText = na(latestClosedTotalVolume) ? "n/a" : formatVolume(latestClosedTotalVolume)
+
         debugTable.cell(0, 10, "Range", text_color = color.white, bgcolor = panelBg)
-        debugTable.cell(1, 10, na(latestClosedRangeLow) ? "n/a" :
-                   str.tostring(latestClosedRangeLow,  format.mintick) + " — " +
-                   str.tostring(latestClosedRangeHigh, format.mintick),
-                   text_color = color.white, bgcolor = panelBg)
+        debugTable.cell(1, 10, rangeText, text_color = color.white, bgcolor = panelBg)
 
         debugTable.cell(0, 11, "TotVol", text_color = color.white, bgcolor = panelBg)
-        debugTable.cell(1, 11, na(latestClosedTotalVolume) ? "n/a" : formatVolume(latestClosedTotalVolume),
-                   text_color = color.white, bgcolor = panelBg)
+        debugTable.cell(1, 11, totVolText, text_color = color.white, bgcolor = panelBg)
