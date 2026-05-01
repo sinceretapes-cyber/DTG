@@ -1138,65 +1138,37 @@ if barstate.islast and showHistory
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §17  ORIGINAL DISCOUNT ZONE BOX (draws when auto is off)
+// §17  MANUAL DISCOUNT ZONE BOX (drawn when Auto-Escalate is OFF)
 // ─────────────────────────────────────────────────────────────────────────────
+// Uses the SAME data source + math + draw pattern as §13 auto. Prior
+// implementation fetched the PREVIOUS completed HTF candle via
+// lookahead_off, while auto uses the CURRENT forming HTF candle via
+// lookahead_on — caused manual zones to lag auto by 1 HTF candle even
+// though the fib math was identical.
 
-int   extend_bars = 50
-[tf_open, tf_high, tf_low, tf_close] = request.security(syminfo.tickerid, base_tf, [open[1], high[1], low[1], close[1]], barmerge.gaps_off, barmerge.lookahead_off)
-int   tf_time_open = request.security(syminfo.tickerid, base_tf, time[1], barmerge.gaps_off, barmerge.lookahead_off)
+[mt_open, mt_close, mt_high, mt_low] = request.security(syminfo.tickerid, base_tf, [open[1], close[1], high[1], low[1]], lookahead=barmerge.lookahead_on)
+int  mt_time_open  = time(base_tf)
+int  mt_time_close = time_close(base_tf)
 
-int  base_ms       = timeframe.in_seconds(base_tf) * 1000
-int  tf_time_close = tf_time_open + base_ms
-bool new_tf        = timeframe.change(base_tf)
+int  mt_candleBias = mt_close > mt_open ? 1 : mt_close < mt_open ? -1 : 0
+[mt_zt, mt_zb]     = f_discountZone(mt_low, mt_high, mt_candleBias)
 
 var box  fib_box  = na
 var line fib_line = na
 
-int right_time = tf_time_close + extend_bars * base_ms
-
-if new_tf
-    if not enableFib or autoDiscount
-        if not na(fib_box)
-            box.delete(fib_box)
-            fib_box := na
-        if not na(fib_line)
-            line.delete(fib_line)
-            fib_line := na
-    else
-        if not na(fib_box)
-            box.delete(fib_box)
-        if not na(fib_line)
-            line.delete(fib_line)
-
-        // Manual zone reuses the same f_discountZone() math as the auto-
-        // escalate path so manual and auto zones are identical — only the
-        // TF selection differs (algorithm vs user).
-        int   candleBias = tf_close > tf_open ? 1 : tf_close < tf_open ? -1 : 0
-        [tf_zt, tf_zb]   = f_discountZone(tf_low, tf_high, candleBias)
-
-        float top_price    = math.max(tf_zt, tf_zb)
-        float bottom_price = math.min(tf_zt, tf_zb)
-        float mid_price    = na(tf_zt) or na(tf_zb) ? na : math.avg(tf_zt, tf_zb)
-        color fill_col     = candleBias == 1 ? bull_fill : candleBias == -1 ? bear_fill : na
-        color border_col   = candleBias == 1 ? bull_border : candleBias == -1 ? bear_border : na
-
-        if not na(top_price) and not na(bottom_price) and not na(mid_price)
-            fib_box := box.new(left=tf_time_close, top=top_price, right=right_time, bottom=bottom_price, xloc=xloc.bar_time)
-            box.set_bgcolor(fib_box, fill_col)
-            box.set_border_color(fib_box, border_col)
-            box.set_border_width(fib_box, 1)
-
-            fib_line := line.new(x1=tf_time_close, y1=mid_price, x2=right_time, y2=mid_price, xloc=xloc.bar_time)
-            line.set_color(fib_line, border_col)
-            line.set_width(fib_line, line_width)
-
-if barstate.islast and autoDiscount
+if barstate.islast
     if not na(fib_box)
         box.delete(fib_box)
         fib_box := na
     if not na(fib_line)
         line.delete(fib_line)
         fib_line := na
+    if enableFib and not autoDiscount and mt_candleBias != 0 and not na(mt_zt) and not na(mt_zb) and not na(mt_time_open) and not na(mt_time_close)
+        color mt_fill   = mt_candleBias == 1 ? bull_fill : bear_fill
+        color mt_border = mt_candleBias == 1 ? bull_border : bear_border
+        float mt_mid    = math.avg(mt_zt, mt_zb)
+        fib_box  := box.new(mt_time_open, math.max(mt_zt, mt_zb), mt_time_close, math.min(mt_zt, mt_zb), xloc=xloc.bar_time, border_color=mt_border, bgcolor=mt_fill, border_width=1)
+        fib_line := line.new(mt_time_open, mt_mid, mt_time_close, mt_mid, xloc=xloc.bar_time, color=mt_border, width=line_width)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
