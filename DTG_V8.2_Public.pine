@@ -2,7 +2,7 @@
 indicator("DTG V8.2", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500, dynamic_requests=true)
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
-// ║  DTG ENGINE — Public Release · build manual-zone-parity                  ║
+// ║  DTG ENGINE — Public Release · build sl-always-fires                     ║
 // ║  Single Entry Model (EM1) · Multi-TF bias · Auto-discount zones          ║
 // ║  3-Step System: Bias → Zone Touch → Signal                               ║
 // ║  Single unified alert() — covers Signal · Triggered · Invalid in one     ║
@@ -653,26 +653,22 @@ if trade.status == "Invalid"
 //   V8 Pro / V8 Unlocked — three exits: TP2 (W), TP1→BE (1:1 secured), SL (L)
 //   Funded Pro           — two exits: TP2 (W) or SL (L). No TP1 management.
 //
-// FIX HISTORY:
-//   V8.1 #1: wasTP1hit snapshot prevents same-bar TP1+BE race.
-//   V8.1 #2: previous 'skip all exits on signal bar' guard was over-broad;
-//            it caused signal-bar SL hits (post-trigger) to be silently
-//            missed — trade stayed Triggered, later got picked up by TP1
-//            and closed as '1:1 secured' instead of the real loss.
+// DESIGN DECISION (after multiple iterations):
+//   Exits ALWAYS evaluate once trade is Triggered — including on the signal
+//   bar. No signal-bar guard, no "close in profit" heuristic.
 //
-//   V8.2 #2 (this fix): exits always evaluated. Pre-trigger-wick false
-//           losses prevented by a targeted heuristic ONLY on the SL check
-//           ONLY on the signal bar:
-//             if onSignalBar AND barClosedInProfit → SL wick was almost
-//             certainly pre-trigger (price came back past entry into
-//             profit by bar close), so skip the SL check.
-//             Otherwise the SL hit is legitimate post-trigger.
-//           TP1/TP2/BE never had the pre-trigger concern (they're on the
-//           profit side of entry, can't be reached before trigger), so
-//           no guard needed for those.
-bool onSignalBar      = bar_index == nz(trade.bar)
-bool barClosedInProfit = (trade.bias == buy_c and close > trade.entry) or (trade.bias == sell_c and close < trade.entry)
-bool skipSL_signalBar = onSignalBar and barClosedInProfit
+//   WHY: Pine cannot distinguish intrabar ordering. Earlier attempts to guess
+//   whether an SL wick was pre-trigger or post-trigger produced false negatives
+//   — real post-trigger SL hits were silently missed, and trades were later
+//   miscategorised as 1:1 secured instead of Loss.
+//
+//   TRADE-OFF: Rare edge case where a signal bar wicks through SL BEFORE
+//   crossing entry (3-way oscillation) will be recorded as a same-bar loss.
+//   This is far less common and far less harmful than missing real losses.
+//   Better to occasionally flag a near-miss as a loss than to silently hide
+//   genuine losses from the stats and dashboard.
+//
+// V8.1 FIX #1 (kept): wasTP1hit snapshot prevents same-bar TP1+BE race.
 if trade.status == "Triggered"
     bool wasTP1hit = trade.tp1hit
     // TP1 detection only when the preset enables it (Funded Pro skips this)
@@ -680,7 +676,7 @@ if trade.status == "Triggered"
     if checkTP1
         trade.tp1hit := true
     bool hitTP2 = (trade.bias == sell_c and low < trade.tp2) or (trade.bias == buy_c and high > trade.tp2)
-    bool hitSL  = not wasTP1hit and not skipSL_signalBar and ((trade.bias == sell_c and high > trade.sl) or (trade.bias == buy_c and low < trade.sl))
+    bool hitSL  = not wasTP1hit and ((trade.bias == sell_c and high > trade.sl) or (trade.bias == buy_c and low < trade.sl))
     // hitBE only meaningful when TP1 is enabled — gate by tp1Enabled so it
     // can never fire under Funded Pro (where wasTP1hit is always false anyway).
     bool hitBE  = tp1Enabled and wasTP1hit and ((trade.bias == buy_c and low < trade.entry) or (trade.bias == sell_c and high > trade.entry))
