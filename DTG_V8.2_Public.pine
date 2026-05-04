@@ -2,7 +2,7 @@
 indicator("DTG V8.2", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500, dynamic_requests=true)
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
-// ║  DTG ENGINE — Public Release · build sl-always-fires                     ║
+// ║  DTG ENGINE — Public Release · build intrabar-order                      ║
 // ║  Single Entry Model (EM1) · Multi-TF bias · Auto-discount zones          ║
 // ║  3-Step System: Bias → Zone Touch → Signal                               ║
 // ║  Single unified alert() — covers Signal · Triggered · Invalid in one     ║
@@ -629,14 +629,87 @@ f_LABEL_truncate(DTG_Signal, showMax)
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §11b  INTRABAR ORDER SCAN (1-minute resolution)
+// ─────────────────────────────────────────────────────────────────────────────
+// Pine only gives OHLC on the chart TF, so on the signal bar we can't tell
+// from OHLC alone whether SL was touched before or after entry. To get the
+// real answer we drop down to 1-minute bars within the signal candle and
+// walk them chronologically.
+//
+// Returns three arrays of 1m OHLC (high, low, close) for the current chart
+// bar. Only called on signal bars where trade.status == "Active" and
+// trade.bar == bar_index — otherwise wastes a security call.
+//
+// Behaviour when a 1m scan isn't available (e.g. charts below 1m, data gap):
+// arrays are empty → fallback to the OHLC-only logic (same as if scan were
+// disabled).
+
+[arr_1m_high, arr_1m_low, arr_1m_close] = request.security_lower_tf(syminfo.tickerid, "1", [high, low, close])
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §12  TRADE STATUS MACHINE
 // ─────────────────────────────────────────────────────────────────────────────
 
-if trade.status == "Active" and (bar_index - nz(trade.bar)) == 0
-    if trade.bias == sell_c and low < trade.entry
-        trade.status     := "Triggered"
-        trade.triggerBar := bar_index
-    else if trade.bias == buy_c and high > trade.entry
+// On the signal bar, walk the 1-minute sub-bars chronologically to determine
+// intrabar order: did price touch entry first, or SL first?
+//
+// 1) Entry touched first → normal trigger, original SL stays.
+// 2) SL touched first    → pre-trigger wick. Bump SL PAST that wick by the
+//                          spread buffer. Keep the trade Active/unfilled —
+//                          if price then comes back and crosses entry, we
+//                          trigger with the adjusted SL protecting us.
+// 3) Both touched in the same 1m bar → treat as SL-first (conservative:
+//    a 1m candle that touches both levels means the wick was extreme
+//    enough that we want the safer SL placement).
+// 4) Neither touched → setup stays Active.
+if trade.status == "Active" and (bar_index - nz(trade.bar)) == 0 and not na(trade.entry) and not na(trade.sl)
+    int nSub = array.size(arr_1m_high)
+    bool entryHit = false
+    bool slHitFirst = false
+    float wickExtreme = na   // the 1m high (sell) or low (buy) that pushed past SL pre-trigger
+    if nSub > 0
+        // Chronological walk — array index 0 is the earliest 1m bar within
+        // the chart bar, last index is the most recent.
+        for i = 0 to nSub - 1
+            float h1 = array.get(arr_1m_high,  i)
+            float l1 = array.get(arr_1m_low,   i)
+            bool  slTouched    = trade.bias == sell_c ? h1 > trade.sl    : l1 < trade.sl
+            bool  entryTouched = trade.bias == sell_c ? l1 < trade.entry : h1 > trade.entry
+            if not entryHit and not slHitFirst
+                if slTouched and not entryTouched
+                    slHitFirst  := true
+                    wickExtreme := trade.bias == sell_c ? h1 : l1
+                else if slTouched and entryTouched
+                    // Both in same 1m bar → treat as SL-first (conservative)
+                    slHitFirst  := true
+                    wickExtreme := trade.bias == sell_c ? h1 : l1
+                else if entryTouched
+                    entryHit := true
+            else if slHitFirst and not entryHit
+                // Still scanning for entry after a pre-trigger wick. Update
+                // wick extreme if this 1m bar pushed further.
+                if trade.bias == sell_c and h1 > wickExtreme
+                    wickExtreme := h1
+                if trade.bias == buy_c and l1 < wickExtreme
+                    wickExtreme := l1
+                if entryTouched
+                    entryHit := true
+    else
+        // Scan unavailable — fall back to OHLC-only detection.
+        entryHit := trade.bias == sell_c ? low < trade.entry : high > trade.entry
+
+    // Apply the SL adjustment when we detected a pre-trigger wick.
+    if slHitFirst and not na(wickExtreme)
+        if trade.bias == sell_c
+            trade.sl := math.round(wickExtreme + inputSpread * spread_tick, digits)
+        else
+            trade.sl := math.round(wickExtreme - inputSpread * spread_tick, digits)
+        // TP1/TP2 recompute from new SL (keeps 1:1 and 1:2 distances consistent)
+        trade.tp1 := math.round(2 * trade.entry - trade.sl, digits)
+        trade.tp2 := math.round(3 * trade.entry - 2 * trade.sl, digits)
+
+    if entryHit
         trade.status     := "Triggered"
         trade.triggerBar := bar_index
     else
