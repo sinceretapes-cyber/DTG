@@ -64,19 +64,28 @@ input double               InpMinSLPips           = 5.0;    // Minimum acceptabl
 input double               InpMaxSLPips           = 0;      // Max acceptable SL distance (pips, 0 = off)
 input double               InpTakeProfitPips      = 0.0;    // Take profit (pips, 0 = none / let trail close)
 
-//--- Break-even & trailing
-// TRAIL_ATR is recommended: trail distance scales with current volatility,
-// so noisy candles don't clip out winners. ATR is read from the timeframe
-// you set in InpATRTimeframe (default M5 — smoother than M1).
-input group                "=== Break-even & Trailing ==="
-input double               InpBreakevenTriggerPips = 10.0;  // Move SL to BE after this profit (pips)
+//--- Exit logic
+// Primary exit is "opposite candle close": stay in the trade as long as
+// each new M1 candle closes in your direction; close at market on the first
+// opposite-direction close. Optional partial close locks in some profit at
+// a fixed pip milestone before the rest of the position rides the trend.
+input group                "=== Exit Logic ==="
+input bool                 InpExitOnOppositeCandle = true;  // Close on first opposite-direction M1 candle close
+input double               InpPartialProfitPips    = 0;     // Pips of profit to trigger partial close (0 = off)
+input double               InpPartialClosePct      = 30;    // % of position to close at the partial milestone
+
+//--- Break-even & trailing (off by default — opposite-candle is the exit)
+// Both BE and trailing are gated by their *Trigger / *Start values being > 0.
+// Set them to non-zero to layer them on top of the opposite-candle exit.
+input group                "=== Break-even & Trailing (optional) ==="
+input double               InpBreakevenTriggerPips = 0;     // Move SL to BE after this profit (pips, 0 = off)
 input double               InpBreakevenBufferPips  = 1.0;   // Lock-in pips at break-even
 input ENUM_TRAIL_MODE      InpTrailMode            = TRAIL_ATR; // How to trail the stop
-input double               InpTrailStartPips       = 20.0;  // [FIXED mode] Start trailing after this profit (pips)
+input double               InpTrailStartPips       = 0;     // [FIXED mode] Start trailing (pips, 0 = off)
 input double               InpTrailDistancePips    = 15.0;  // [FIXED mode] Trail distance behind price (pips)
 input ENUM_TIMEFRAMES      InpATRTimeframe         = PERIOD_M5; // [ATR mode] Timeframe for ATR
 input int                  InpATRPeriod            = 14;    // [ATR mode] ATR period
-input double               InpATRTrailStartMult    = 1.0;   // [ATR mode] Start trailing after profit >= ATR * this
+input double               InpATRTrailStartMult    = 0;     // [ATR mode] Start trailing (ATR mult, 0 = off)
 input double               InpATRTrailDistMult     = 2.0;   // [ATR mode] Trail distance = ATR * this
 
 //--- Money management
@@ -134,6 +143,7 @@ datetime g_currentDay     = 0;
 double   g_dayStartEquity = 0.0;
 bool     g_dailyHalt      = false;
 int      g_atrHandle      = INVALID_HANDLE;
+ulong    g_partialedTickets[];   // tickets that have already had their partial close fired
 
 //+------------------------------------------------------------------+
 //| Init / deinit                                                    |
@@ -222,19 +232,25 @@ void OnTick()
 void OnNewM1Bar()
   {
    if(g_dailyHalt) return;
-   if(!IsWithinSession()) return;
 
    // Always cancel previous pending orders so we only chase the newest signal
    CancelOurPendingOrders();
-
-   if(CountOpenPositions() >= InpMaxOpenPositions) return;
-   if(!IsSpreadAcceptable()) return;
 
    double op = iOpen (_Symbol, PERIOD_M1, 1);
    double cl = iClose(_Symbol, PERIOD_M1, 1);
    double hi = iHigh (_Symbol, PERIOD_M1, 1);
    double lo = iLow  (_Symbol, PERIOD_M1, 1);
    if(op <= 0 || cl <= 0 || hi <= 0 || lo <= 0) return;
+
+   // Opposite-candle exit: if the just-closed candle's direction is against
+   // any of our open positions, close them at market BEFORE we evaluate the
+   // new signal. Runs even outside session so trades aren't stranded.
+   if(InpExitOnOppositeCandle)
+      ExitPositionsAgainstCandle(op, cl);
+
+   if(!IsWithinSession()) return;
+   if(CountOpenPositions() >= InpMaxOpenPositions) return;
+   if(!IsSpreadAcceptable()) return;
 
    double rangePips = (hi - lo) / g_pip;
    if(rangePips < InpMinCandleSizePips) return;
@@ -244,6 +260,41 @@ void OnNewM1Bar()
       PlaceBuyStop(hi, lo);
    else if(cl < op && InpTradeBearish)
       PlaceSellStop(lo, hi);
+  }
+
+//+------------------------------------------------------------------+
+//| Close positions whose direction is opposite to the just-closed   |
+//| M1 candle. Doji (open == close) → hold.                          |
+//+------------------------------------------------------------------+
+void ExitPositionsAgainstCandle(double candleOpen, double candleClose)
+  {
+   bool bearishClose = (candleClose < candleOpen);
+   bool bullishClose = (candleClose > candleOpen);
+   if(!bearishClose && !bullishClose) return;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      if(!posInfo.SelectByIndex(i)) continue;
+      if(posInfo.Symbol() != _Symbol) continue;
+      if(posInfo.Magic()  != InpMagic) continue;
+
+      bool shouldClose = false;
+      if(posInfo.PositionType() == POSITION_TYPE_BUY  && bearishClose) shouldClose = true;
+      if(posInfo.PositionType() == POSITION_TYPE_SELL && bullishClose) shouldClose = true;
+      if(!shouldClose) continue;
+
+      ulong tk = posInfo.Ticket();
+      if(InpVerboseLog)
+        {
+         PrintFormat("Exit %s on opposite-candle close (ticket %I64u)",
+                     posInfo.PositionType() == POSITION_TYPE_BUY ? "BUY" : "SELL", tk);
+        }
+      if(!trade.PositionClose(tk))
+        {
+         PrintFormat("Close failed on ticket %I64u: %d %s",
+                     tk, trade.ResultRetcode(), trade.ResultRetcodeDescription());
+        }
+     }
   }
 
 //+------------------------------------------------------------------+
@@ -399,6 +450,8 @@ double CalcLotSize(double slPips)
 //+------------------------------------------------------------------+
 void ManageOpenPositions()
   {
+   ProcessPartialCloses();
+
    double pt          = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    long   stopsLvlPts = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
    double minDist     = stopsLvlPts * pt;
@@ -525,6 +578,72 @@ void ExpirePendingOrders()
          if(ordInfo.Symbol() == _Symbol && ordInfo.Magic() == InpMagic)
             if(ordInfo.TimeSetup() + InpPendingExpirySec <= now)
                trade.OrderDelete(ordInfo.Ticket());
+  }
+
+//+------------------------------------------------------------------+
+//| Partial-close tracking & execution                               |
+//+------------------------------------------------------------------+
+bool IsTicketPartialed(ulong ticket)
+  {
+   int n = ArraySize(g_partialedTickets);
+   for(int i = 0; i < n; i++)
+      if(g_partialedTickets[i] == ticket) return true;
+   return false;
+  }
+
+void MarkTicketPartialed(ulong ticket)
+  {
+   int n = ArraySize(g_partialedTickets);
+   ArrayResize(g_partialedTickets, n + 1);
+   g_partialedTickets[n] = ticket;
+  }
+
+void ProcessPartialCloses()
+  {
+   if(InpPartialProfitPips <= 0) return;
+   if(InpPartialClosePct  <= 0 || InpPartialClosePct >= 100) return;
+
+   double bid    = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double ask    = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double step   = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   if(step <= 0) step = 0.01;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      if(!posInfo.SelectByIndex(i)) continue;
+      if(posInfo.Symbol() != _Symbol) continue;
+      if(posInfo.Magic()  != InpMagic) continue;
+
+      ulong tk = posInfo.Ticket();
+      if(IsTicketPartialed(tk)) continue;
+
+      double entry      = posInfo.PriceOpen();
+      double profitPips = 0.0;
+      if(posInfo.PositionType() == POSITION_TYPE_BUY)
+         profitPips = (bid - entry) / g_pip;
+      else
+         profitPips = (entry - ask) / g_pip;
+
+      if(profitPips < InpPartialProfitPips) continue;
+
+      double currentVol = posInfo.Volume();
+      double closeVol   = currentVol * (InpPartialClosePct / 100.0);
+      closeVol = MathFloor(closeVol / step) * step;
+      double remaining = currentVol - closeVol;
+
+      // Both legs must satisfy broker minimum lot, otherwise skip
+      if(closeVol < minLot) continue;
+      if(remaining > 0 && remaining < minLot) continue;
+
+      if(trade.PositionClosePartial(tk, closeVol))
+        {
+         MarkTicketPartialed(tk);
+         if(InpVerboseLog)
+            PrintFormat("Partial close %.2f lots on ticket %I64u at +%.1f pips",
+                        closeVol, tk, profitPips);
+        }
+     }
   }
 
 //+------------------------------------------------------------------+

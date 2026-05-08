@@ -75,15 +75,29 @@ MT5/Experts/OneMinuteScalper.mq5
 
 | Input | Default | What it does |
 |---|---|---|
-| `InpBreakevenTriggerPips` | `10.0` | Move SL to break-even (+ buffer) when this much profit is reached. |
+### Exit Logic
+
+| Input | Default | What it does |
+|---|---|---|
+| `InpExitOnOppositeCandle` | `true` | **Primary exit.** On the close of every M1 candle, if the candle's direction is opposite to your open position, the EA closes that position at market — regardless of P&L. So a buy stays open as long as each new candle keeps closing bullish, and exits the moment the first bearish candle closes. Mirror for sells. |
+| `InpPartialProfitPips` | `0` | Optional dynamic profit-locking. When in profit by this many pips, close part of the position. `0` disables partial closes (rest of trade rides until opposite-candle exit). |
+| `InpPartialClosePct` | `30` | What % of the position to close at the partial milestone. Only used if `InpPartialProfitPips > 0`. |
+
+### Break-even & Trailing (optional, off by default)
+
+These are off out of the box — the opposite-candle close is the exit. Set the trigger / start values to a non-zero number to layer them on top of the opposite-candle exit (whichever fires first wins).
+
+| Input | Default | What it does |
+|---|---|---|
+| `InpBreakevenTriggerPips` | `0` | Move SL to break-even (+ buffer) when this much profit is reached (`0` = off). |
 | `InpBreakevenBufferPips` | `1.0` | Pips locked in at BE (so you cover spread / commission). |
 | `InpTrailMode` | `TRAIL_ATR` | `TRAIL_FIXED_PIPS` uses fixed pip distance. `TRAIL_ATR` scales the trail with current volatility (recommended on noisy symbols like gold). |
-| `InpTrailStartPips` | `20.0` | *(FIXED mode only)* Start trailing after this much profit. |
+| `InpTrailStartPips` | `0` | *(FIXED mode only)* Start trailing after this much profit (`0` = off). |
 | `InpTrailDistancePips` | `15.0` | *(FIXED mode only)* Distance the trailing stop sits behind price. |
-| `InpATRTimeframe` | `PERIOD_M5` | *(ATR mode)* Timeframe to read ATR from. M5 is smoother than M1 and gives more stable trail distances. |
+| `InpATRTimeframe` | `PERIOD_M5` | *(ATR mode)* Timeframe to read ATR from. M5 is smoother than M1. |
 | `InpATRPeriod` | `14` | *(ATR mode)* ATR averaging period. |
-| `InpATRTrailStartMult` | `1.0` | *(ATR mode)* Start trailing once profit ≥ ATR × this. |
-| `InpATRTrailDistMult` | `2.0` | *(ATR mode)* Trail distance = ATR × this. Increase to give winners more room. |
+| `InpATRTrailStartMult` | `0` | *(ATR mode)* Start trailing once profit ≥ ATR × this (`0` = off). |
+| `InpATRTrailDistMult` | `2.0` | *(ATR mode)* Trail distance = ATR × this. |
 
 ### Money management
 
@@ -138,29 +152,61 @@ When the US switches DST in March / November, bump the hours by 1 to keep matchi
 
 ## Strategy logic, in detail
 
-On every tick the EA:
+### Entry — every M1 candle
 
-1. Detects when a new M1 bar has opened.
-2. Cancels any leftover pending orders from the previous minute.
+On every new M1 bar the EA:
+
+1. Cancels any leftover pending orders from the previous minute.
+2. Reads the **just-closed** candle (index 1) and runs the opposite-candle
+   exit logic against it (see below).
 3. Checks filters: session window, max open positions, spread, candle size.
-4. Reads the **just-closed** candle (index 1).
-   - Bullish (`close > open`) → `BuyStop` at `high + entry_buffer`.
-   - Bearish (`close < open`) → `SellStop` at `low - entry_buffer`.
+4. If the just-closed candle was:
+   - Bullish (`close > open`) → places a `BuyStop` at `high + entry_buffer`.
+   - Bearish (`close < open`) → places a `SellStop` at `low - entry_buffer`.
    - Doji (`close == open`) → skipped.
-5. Sets the initial SL just beyond the signal candle's other extreme.
-6. Sizes the lot so that hitting that SL = `InpRiskPercent` of current equity.
-7. Sets pending order expiry to 60 seconds — if the high/low isn't broken
-   inside the new candle, the pending dies on its own.
+5. Sets the initial SL (default: a fixed `InpSLFixedPips` distance) as
+   catastrophic protection. Sizes the lot so that hitting the SL =
+   `InpRiskPercent` of current equity.
+6. The pending order is cancelled by the EA after `InpPendingExpirySec`
+   (default 60s) — if the high/low isn't broken in the next candle, no fill.
 
-Once a position is filled, on every tick:
+### Exit — opposite-candle close
 
-- If profit ≥ `InpBreakevenTriggerPips`, ratchet SL to entry +
-  `InpBreakevenBufferPips` (so spread / commission is covered, not just zero).
-- If profit ≥ `InpTrailStartPips`, switch to a trailing stop
-  `InpTrailDistancePips` behind price.
-- The SL only ever moves in your favor (ratchet — never loosens).
+On every new M1 bar, **before** evaluating the new signal, the EA looks at
+the just-closed candle's direction:
 
-The broker's `SYMBOL_TRADE_STOPS_LEVEL` is respected on every order and every
+- Holding a **buy** + candle closed **bullish** → hold (let it run).
+- Holding a **buy** + candle closed **bearish** → close at market, P&L
+  doesn't matter. The trend that put us in is over.
+- Holding a **sell** + candle closed **bearish** → hold.
+- Holding a **sell** + candle closed **bullish** → close at market.
+- Doji on either side → hold.
+
+So a winning streak of bullish candles after a bullish-signal entry rides
+all the way until the first bearish close, capturing the whole trend leg.
+
+### Optional: dynamic profit locking
+
+If you set `InpPartialProfitPips > 0`, once the trade is up by that many
+pips the EA closes `InpPartialClosePct`% of the position at market and
+keeps the remainder running until the opposite-candle close. Useful for
+locking some money in before letting the rest ride a runner.
+
+### Optional: break-even & trailing stop
+
+Off by default. If you set `InpBreakevenTriggerPips > 0` or one of the
+trail-start values > 0, those mechanics layer on top — whichever exit
+trigger (BE / trail / opposite candle) fires first wins. The SL only ever
+ratchets in your favor.
+
+### Catastrophic protection
+
+The initial fixed SL is always there even though it rarely fires (the
+opposite-candle exit usually closes the trade first). It's the safety net
+for flash moves where price gaps or spikes through the next candle's open
+before any close-direction logic can react.
+
+The broker's `SYMBOL_TRADE_STOPS_LEVEL` is respected on every order and
 modification, so the EA won't be rejected for placing stops too close.
 
 ---
