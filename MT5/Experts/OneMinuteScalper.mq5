@@ -206,10 +206,10 @@ void PlaceBuyStop(double signalHigh, double signalLow)
    double lot = CalcLotSize(slDistPips);
    if(lot <= 0) return;
 
-   datetime expiry = InpUsePendingExpiry ? (TimeCurrent() + InpPendingExpirySec) : 0;
-   ENUM_ORDER_TYPE_TIME tType = (expiry > 0) ? ORDER_TIME_SPECIFIED : ORDER_TIME_GTC;
-
-   if(!trade.BuyStop(lot, price, _Symbol, sl, tp, tType, expiry, InpComment))
+   // Always use GTC; client-side ExpirePendingOrders() and the per-bar cancel
+   // in OnNewM1Bar() handle expiry. Broker-side expiration timestamps are
+   // rejected by some brokers (e.g. Exness) for sub-day expiries.
+   if(!trade.BuyStop(lot, price, _Symbol, sl, tp, ORDER_TIME_GTC, 0, InpComment))
      {
       if(InpVerboseLog)
          PrintFormat("BuyStop failed: %d %s",
@@ -248,10 +248,7 @@ void PlaceSellStop(double signalLow, double signalHigh)
    double lot = CalcLotSize(slDistPips);
    if(lot <= 0) return;
 
-   datetime expiry = InpUsePendingExpiry ? (TimeCurrent() + InpPendingExpirySec) : 0;
-   ENUM_ORDER_TYPE_TIME tType = (expiry > 0) ? ORDER_TIME_SPECIFIED : ORDER_TIME_GTC;
-
-   if(!trade.SellStop(lot, price, _Symbol, sl, tp, tType, expiry, InpComment))
+   if(!trade.SellStop(lot, price, _Symbol, sl, tp, ORDER_TIME_GTC, 0, InpComment))
      {
       if(InpVerboseLog)
          PrintFormat("SellStop failed: %d %s",
