@@ -53,10 +53,10 @@ input double               InpMaxSpreadPips       = 0;      // Max allowed sprea
 //--- Stop loss / Take profit
 input group                "=== Stop Loss / Take Profit ==="
 input ENUM_SL_MODE         InpSLMode              = SL_CANDLE_EXTREME; // Stop loss mode
-input double               InpSLBufferPips        = 2.0;    // SL buffer beyond candle extreme (pips)
+input double               InpSLBufferPips        = 0.5;    // SL buffer beyond candle extreme (pips)
 input double               InpSLFixedPips         = 8.0;    // Fixed SL (pips), used in SL_FIXED_PIPS mode
 input double               InpMinSLPips           = 5.0;    // Minimum acceptable SL distance (pips)
-input double               InpMaxSLPips           = 0;      // Max acceptable SL distance (pips, 0 = off)
+input double               InpMaxSLPips           = 20.0;   // Max acceptable SL distance (pips, 0 = off) — caps wide candles
 input double               InpTakeProfitPips      = 0.0;    // Take profit (pips, 0 = none / let trail close)
 
 //--- Break-even & trailing
@@ -82,17 +82,25 @@ input double               InpRiskPercent          = 0.25;  // Risk % per trade
 input int                  InpMaxOpenPositions     = 1;     // Max simultaneous positions
 
 //--- Daily limits
-// Note: 0 / 0 here disables the daily halt so backtests run uninterrupted.
-// For demo/live use, suggest 1.0 (profit target) and 2.0 (loss limit).
+// When a limit is hit: pendings are cancelled. If InpCloseAllOnDailyHalt is
+// true, all open positions are also closed immediately. New trades are then
+// halted until the next server day rolls over.
 input group                "=== Daily Limits ==="
-input double               InpDailyProfitTarget    = 0;     // Halt new trades after +X% (0 = off)
-input double               InpDailyLossLimit       = 0;     // Halt new trades after -X% (0 = off)
+input double               InpDailyProfitTarget    = 0.25;  // Halt + flatten after +X% (0 = off)
+input double               InpDailyLossLimit       = 1.0;   // Halt + flatten after -X% (0 = off)
+input bool                 InpCloseAllOnDailyHalt  = true;  // Close open positions when a daily limit is hit
 
 //--- Session filter
+// Defaults below = New York equity session in GMT:
+//   13:30 GMT - 20:00 GMT during US daylight time (Mar - early Nov)
+//   Add 1 hour outside DST (14:30 - 21:00 GMT) — see README.
+// Times are interpreted in GMT when InpSessionUseGMT = true (recommended,
+// independent of broker server timezone). Set to false to use server time.
 input group                "=== Session Filter ==="
-input bool                 InpUseSessionFilter     = false; // Restrict to a trading window (server time)
-input int                  InpStartHour            = 7;     // Start hour
-input int                  InpStartMinute          = 0;     // Start minute
+input bool                 InpUseSessionFilter     = true;  // Restrict to a trading window
+input bool                 InpSessionUseGMT        = true;  // true = times are GMT; false = broker server time
+input int                  InpStartHour            = 13;    // Start hour
+input int                  InpStartMinute          = 30;    // Start minute
 input int                  InpEndHour              = 20;    // End hour
 input int                  InpEndMinute            = 0;     // End minute
 
@@ -531,17 +539,44 @@ void CheckDailyLimits()
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    double pct = (equity - g_dayStartEquity) / g_dayStartEquity * 100.0;
 
+   bool   hit         = false;
+   string hitReason   = "";
    if(InpDailyProfitTarget > 0 && pct >= InpDailyProfitTarget)
      {
-      PrintFormat("Daily profit target reached: %.2f%%. Halting new trades.", pct);
-      g_dailyHalt = true;
-      CancelOurPendingOrders();
+      hit = true;
+      hitReason = StringFormat("Daily profit target reached: +%.2f%%", pct);
      }
    else if(InpDailyLossLimit > 0 && pct <= -MathAbs(InpDailyLossLimit))
      {
-      PrintFormat("Daily loss limit hit: %.2f%%. Halting new trades.", pct);
-      g_dailyHalt = true;
-      CancelOurPendingOrders();
+      hit = true;
+      hitReason = StringFormat("Daily loss limit hit: %.2f%%", pct);
+     }
+   if(!hit) return;
+
+   PrintFormat("%s. Halting new trades.", hitReason);
+   g_dailyHalt = true;
+   CancelOurPendingOrders();
+   if(InpCloseAllOnDailyHalt)
+     {
+      Print("Closing all open positions per InpCloseAllOnDailyHalt=true");
+      CloseAllOurPositions();
+     }
+  }
+
+void CloseAllOurPositions()
+  {
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+     {
+      if(!posInfo.SelectByIndex(i)) continue;
+      if(posInfo.Symbol() != _Symbol) continue;
+      if(posInfo.Magic()  != InpMagic) continue;
+      if(!trade.PositionClose(posInfo.Ticket()))
+        {
+         PrintFormat("Close failed for ticket %I64u: %d %s",
+                     posInfo.Ticket(),
+                     trade.ResultRetcode(),
+                     trade.ResultRetcodeDescription());
+        }
      }
   }
 
@@ -551,8 +586,9 @@ void CheckDailyLimits()
 bool IsWithinSession()
   {
    if(!InpUseSessionFilter) return true;
+   datetime t = InpSessionUseGMT ? TimeGMT() : TimeCurrent();
    MqlDateTime dt;
-   TimeToStruct(TimeCurrent(), dt);
+   TimeToStruct(t, dt);
    int cur   = dt.hour * 60 + dt.min;
    int start = InpStartHour * 60 + InpStartMinute;
    int end   = InpEndHour   * 60 + InpEndMinute;

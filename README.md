@@ -65,10 +65,10 @@ MT5/Experts/OneMinuteScalper.mq5
 | Input | Default | What it does |
 |---|---|---|
 | `InpSLMode` | `SL_CANDLE_EXTREME` | `SL_CANDLE_EXTREME` parks SL just beyond the signal candle's other extreme. `SL_FIXED_PIPS` uses a fixed pip distance instead. |
-| `InpSLBufferPips` | `2.0` | Buffer pips beyond the candle low/high when using `SL_CANDLE_EXTREME`. |
+| `InpSLBufferPips` | `0.5` | Buffer pips beyond the candle low/high when using `SL_CANDLE_EXTREME`. |
 | `InpSLFixedPips` | `8.0` | Fixed pip stop, only used in `SL_FIXED_PIPS` mode. |
 | `InpMinSLPips` | `5.0` | Reject trades whose SL distance is implausibly tight (which would size into a huge lot). |
-| `InpMaxSLPips` | `0` | Reject trades whose SL distance is huge (`0` = disabled). |
+| `InpMaxSLPips` | `20.0` | Reject trades whose SL distance is huge (`0` = disabled). Caps wide-candle outliers. |
 | `InpTakeProfitPips` | `0.0` | Optional fixed TP. `0` means no TP at all — let the trailing stop close the trade. |
 
 ### Break-even & trailing
@@ -98,16 +98,30 @@ MT5/Experts/OneMinuteScalper.mq5
 
 | Input | Default | What it does |
 |---|---|---|
-| `InpDailyProfitTarget` | `0` | Stops opening new trades after +X% on the day. **Defaults to off so backtests run uninterrupted.** Set to `1.0` for live. |
-| `InpDailyLossLimit` | `0` | Stops opening new trades after -X% on the day. **Defaults to off for backtesting.** Set to `2.0` for live. |
+| `InpDailyProfitTarget` | `0.25` | Stops the algo after +X% on the day. Pendings cancel and (with `InpCloseAllOnDailyHalt=true`) open positions are closed. Resets at next server day. |
+| `InpDailyLossLimit` | `1.0` | Stops the algo after -X% on the day, same flatten-and-halt behaviour. |
+| `InpCloseAllOnDailyHalt` | `true` | If `true`, hitting either daily limit closes all open positions immediately. If `false`, the limits only halt *new* entries and let existing trades run their trail. |
 
 ### Session filter
 
 | Input | Default | What it does |
 |---|---|---|
-| `InpUseSessionFilter` | `false` | Restrict trading to a window. |
-| `InpStartHour` / `InpStartMinute` | `7:00` | Window start (server time). |
-| `InpEndHour` / `InpEndMinute` | `20:00` | Window end (server time, wraps midnight if start > end). |
+| `InpUseSessionFilter` | `true` | Restrict trading to a window. |
+| `InpSessionUseGMT` | `true` | If `true`, the start/end times below are interpreted in **GMT** (recommended — same numbers regardless of broker). If `false`, they're interpreted in your **broker's server time**. |
+| `InpStartHour` / `InpStartMinute` | `13:30` | Window start. Default = NY equity open in GMT during US daylight time. |
+| `InpEndHour` / `InpEndMinute` | `20:00` | Window end. Default = NY equity close in GMT during US daylight time. Wraps midnight if start > end. |
+
+### NY session reference (set these in `InpStartHour` / `InpEndHour`)
+
+With `InpSessionUseGMT = true`:
+
+| What you want | DST (≈ Mar – early Nov) | Standard time (≈ Nov – Mar) |
+|---|---|---|
+| **NY equity** (9:30 AM – 4:00 PM ET) | `13:30 → 20:00` GMT *(default)* | `14:30 → 21:00` GMT |
+| **NY forex** (8:00 AM – 5:00 PM ET) | `12:00 → 21:00` GMT | `13:00 → 22:00` GMT |
+| **NY full incl. after-hours** (4:00 AM – 8:00 PM ET) | `08:00 → 00:00` GMT | `09:00 → 01:00` GMT |
+
+When the US switches DST in March / November, bump the hours by 1 to keep matching NY local time. Or just use the **NY forex** range — it's wide enough to comfortably cover the equity session even if you forget to adjust for DST.
 
 ### Misc
 
