@@ -181,8 +181,20 @@ int OnInit()
    g_dailyHalt      = false;
    g_lastBarTime    = (datetime)iTime(_Symbol, PERIOD_M1, 0);
 
-   PrintFormat("OneMinuteScalper init: digits=%d pip=%.*f magic=%I64d",
+   PrintFormat("OneMinuteScalper init: digits=%d pip=%.*f magic=%I64d build=2026-05-08-v2",
                g_digits, g_digits, g_pip, InpMagic);
+   PrintFormat("Inputs A: RiskPct=%.4f FixedLot=%.2f LotMode=%d MaxOpenPos=%d",
+               InpRiskPercent, InpFixedLot, (int)InpLotMode, InpMaxOpenPositions);
+   PrintFormat("Inputs B: DailyProfit=%.4f DailyLoss=%.4f CloseAllOnHalt=%s",
+               InpDailyProfitTarget, InpDailyLossLimit,
+               InpCloseAllOnDailyHalt ? "true" : "false");
+   PrintFormat("Inputs C: MaxSpread=%.1f MinCandle=%.1f SLMode=%d SLFixed=%.1f",
+               InpMaxSpreadPips, InpMinCandleSizePips,
+               (int)InpSLMode, InpSLFixedPips);
+   PrintFormat("Inputs D: ExitOnOpp=%s SessionFilter=%s BE=%.1f TrailStart=%.1f ATRStartMult=%.2f",
+               InpExitOnOppositeCandle ? "true" : "false",
+               InpUseSessionFilter     ? "true" : "false",
+               InpBreakevenTriggerPips, InpTrailStartPips, InpATRTrailStartMult);
    return(INIT_SUCCEEDED);
   }
 
