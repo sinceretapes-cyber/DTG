@@ -94,11 +94,17 @@ input bool                 InpCloseAllOnDailyHalt  = true;  // Close open positi
 // Defaults below = New York equity session in GMT:
 //   13:30 GMT - 20:00 GMT during US daylight time (Mar - early Nov)
 //   Add 1 hour outside DST (14:30 - 21:00 GMT) — see README.
-// Times are interpreted in GMT when InpSessionUseGMT = true (recommended,
-// independent of broker server timezone). Set to false to use server time.
+// IMPORTANT: in the Strategy Tester, TimeGMT() is unreliable. The EA
+// instead computes GMT as: GMT = TimeCurrent() - InpBrokerGMTOffset * 3600.
+// Set InpBrokerGMTOffset to your broker's server offset from GMT in hours
+// (e.g. 3 for GMT+3, common for Exness / IC Markets / FBS in summer).
+// You can find your broker's offset in their MT5 server name (e.g.
+// "Exness-MT5Real6" runs on GMT+3 in EEST), or by comparing the time at
+// the top-right of MT5 to your local clock.
 input group                "=== Session Filter ==="
 input bool                 InpUseSessionFilter     = true;  // Restrict to a trading window
-input bool                 InpSessionUseGMT        = true;  // true = times are GMT; false = broker server time
+input bool                 InpSessionUseGMT        = true;  // true = times below are GMT; false = broker server time
+input int                  InpBrokerGMTOffset      = 3;     // Broker server's GMT offset in hours (only used when InpSessionUseGMT=true)
 input int                  InpStartHour            = 13;    // Start hour
 input int                  InpStartMinute          = 30;    // Start minute
 input int                  InpEndHour              = 20;    // End hour
@@ -586,7 +592,14 @@ void CloseAllOurPositions()
 bool IsWithinSession()
   {
    if(!InpUseSessionFilter) return true;
-   datetime t = InpSessionUseGMT ? TimeGMT() : TimeCurrent();
+   // Convert to GMT manually if requested. We do NOT use TimeGMT() because
+   // it returns broker server time in the Strategy Tester, defeating the
+   // purpose. TimeCurrent() always returns the simulated server time
+   // correctly, so subtracting the broker's offset gives real GMT in both
+   // live and tester contexts.
+   datetime t = TimeCurrent();
+   if(InpSessionUseGMT)
+      t -= (datetime)(InpBrokerGMTOffset * 3600);
    MqlDateTime dt;
    TimeToStruct(t, dt);
    int cur   = dt.hour * 60 + dt.min;

@@ -108,8 +108,11 @@ MT5/Experts/OneMinuteScalper.mq5
 |---|---|---|
 | `InpUseSessionFilter` | `true` | Restrict trading to a window. |
 | `InpSessionUseGMT` | `true` | If `true`, the start/end times below are interpreted in **GMT** (recommended — same numbers regardless of broker). If `false`, they're interpreted in your **broker's server time**. |
+| `InpBrokerGMTOffset` | `3` | Your broker's server offset from GMT, in hours. Only used when `InpSessionUseGMT = true`. Most MT5 brokers (Exness, IC Markets, FBS, RoboForex) run on **GMT+3 in summer / GMT+2 in winter**. Pepperstone, FXCM and a few others run on GMT+0. **You can find this in the broker's server name** (e.g. *Exness-MT5Real6* = GMT+3) or by comparing the clock at the top-right of MT5 to your local time. |
 | `InpStartHour` / `InpStartMinute` | `13:30` | Window start. Default = NY equity open in GMT during US daylight time. |
 | `InpEndHour` / `InpEndMinute` | `20:00` | Window end. Default = NY equity close in GMT during US daylight time. Wraps midnight if start > end. |
+
+> **Why a manual offset and not auto-detect?** The MT5 Strategy Tester deliberately runs in a fixed timezone — `TimeGMT()` returns broker server time during a backtest, not real GMT. Without an explicit offset the session filter would silently apply the wrong window in your tests. Setting the offset once is a one-line operation and keeps live/tester behaviour identical.
 
 ### NY session reference (set these in `InpStartHour` / `InpEndHour`)
 
