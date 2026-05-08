@@ -105,15 +105,15 @@ These are off out of the box — the opposite-candle close is the exit. Set the 
 |---|---|---|
 | `InpLotMode` | `LOT_RISK_PERCENT` | `LOT_FIXED` uses `InpFixedLot`. `LOT_RISK_PERCENT` sizes lots so that the SL = `InpRiskPercent` of equity. |
 | `InpFixedLot` | `0.01` | Lot size in fixed mode. |
-| `InpRiskPercent` | `0.05` | Risk per trade in % of equity. Sized so the 0.25% daily target needs ~5 net winners (not just one). |
+| `InpRiskPercent` | `0.05` | Risk per trade in % of equity. |
 | `InpMaxOpenPositions` | `1` | Max positions opened by this EA on this symbol concurrently. |
 
 ### Daily limits
 
 | Input | Default | What it does |
 |---|---|---|
-| `InpDailyProfitTarget` | `0.25` | Stops the algo after +X% on the day. Pendings cancel and (with `InpCloseAllOnDailyHalt=true`) open positions are closed. Resets at next server day. |
-| `InpDailyLossLimit` | `1.0` | Stops the algo after -X% on the day, same flatten-and-halt behaviour. |
+| `InpDailyProfitTarget` | `0` | Stops the algo after +X% on the day. `0` = disabled (default — EA runs continuously). Pendings cancel and (with `InpCloseAllOnDailyHalt=true`) open positions are closed. Resets at next server day. |
+| `InpDailyLossLimit` | `0` | Stops the algo after -X% on the day, same flatten-and-halt behaviour. `0` = disabled. |
 | `InpCloseAllOnDailyHalt` | `true` | If `true`, hitting either daily limit closes all open positions immediately. If `false`, the limits only halt *new* entries and let existing trades run their trail. |
 
 ### Session filter

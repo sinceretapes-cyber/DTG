@@ -99,9 +99,11 @@ input int                  InpMaxOpenPositions     = 1;     // Max simultaneous 
 // When a limit is hit: pendings are cancelled. If InpCloseAllOnDailyHalt is
 // true, all open positions are also closed immediately. New trades are then
 // halted until the next server day rolls over.
+// Both limits default to 0 (off) — the EA runs continuously. Set them to
+// non-zero to re-enable.
 input group                "=== Daily Limits ==="
-input double               InpDailyProfitTarget    = 0.25;  // Halt + flatten after +X% (0 = off)
-input double               InpDailyLossLimit       = 1.0;   // Halt + flatten after -X% (0 = off)
+input double               InpDailyProfitTarget    = 0;     // Halt + flatten after +X% (0 = off)
+input double               InpDailyLossLimit       = 0;     // Halt + flatten after -X% (0 = off)
 input bool                 InpCloseAllOnDailyHalt  = true;  // Close open positions when a daily limit is hit
 
 //--- Session filter
