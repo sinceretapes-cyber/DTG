@@ -223,7 +223,7 @@ int OnInit()
    g_dailyHalt      = false;
    g_lastBarTime    = (datetime)iTime(_Symbol, PERIOD_M1, 0);
 
-   PrintFormat("OneMinuteScalper init: digits=%d pip=%.*f magic=%I64d build=2026-05-08-v3",
+   PrintFormat("OneMinuteScalper init: digits=%d pip=%.*f magic=%I64d build=2026-05-08-v4",
                g_digits, g_digits, g_pip, InpMagic);
    PrintFormat("Inputs A: RiskPct=%.4f FixedLot=%.2f LotMode=%d MaxOpenPos=%d",
                InpRiskPercent, InpFixedLot, (int)InpLotMode, InpMaxOpenPositions);
@@ -446,7 +446,22 @@ void PlaceBuyStop(double signalHigh, double signalLow)
    if(!ApplyBrokerStopConstraints(ORDER_TYPE_BUY_STOP, price, sl, tp)) return;
 
    double slDistPips = (price - sl) / g_pip;
-   if(slDistPips < InpMinSLPips) return;
+
+   // Spread-aware safety floor: SL must sit at least (current spread + 1 pip)
+   // below entry, otherwise the bid is already at/below SL the moment the
+   // stop fills, producing instant stop-outs. This guards against bad inputs
+   // (e.g. InpSLFixedPips=0) that would otherwise place SL = entry price.
+   double curBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double curAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double spreadPips = (curAsk - curBid) / g_pip;
+   double minRequired = MathMax(InpMinSLPips, spreadPips + 1.0);
+   if(slDistPips < minRequired)
+     {
+      if(InpVerboseLog)
+         PrintFormat("Skip BUY: SL too close (%.2f pips, need >=%.2f, spread=%.2f)",
+                     slDistPips, minRequired, spreadPips);
+      return;
+     }
    if(InpMaxSLPips > 0 && slDistPips > InpMaxSLPips) return;
 
    double lot = CalcLotSize(slDistPips);
@@ -488,7 +503,18 @@ void PlaceSellStop(double signalLow, double signalHigh)
    if(!ApplyBrokerStopConstraints(ORDER_TYPE_SELL_STOP, price, sl, tp)) return;
 
    double slDistPips = (sl - price) / g_pip;
-   if(slDistPips < InpMinSLPips) return;
+
+   double curBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double curAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double spreadPips = (curAsk - curBid) / g_pip;
+   double minRequired = MathMax(InpMinSLPips, spreadPips + 1.0);
+   if(slDistPips < minRequired)
+     {
+      if(InpVerboseLog)
+         PrintFormat("Skip SELL: SL too close (%.2f pips, need >=%.2f, spread=%.2f)",
+                     slDistPips, minRequired, spreadPips);
+      return;
+     }
    if(InpMaxSLPips > 0 && slDistPips > InpMaxSLPips) return;
 
    double lot = CalcLotSize(slDistPips);
@@ -557,10 +583,12 @@ double CalcLotSize(double slPips)
       else
         {
          double moneyPerPipPerLot = tickValue * (g_pip / tickSize);
+         // If we don't have a usable SL distance, refuse to size the trade
+         // rather than falling back to InpFixedLot — that fallback was
+         // hiding broken-SL bugs by placing the trade anyway.
          if(moneyPerPipPerLot <= 0 || slPips <= 0)
-            lot = InpFixedLot;
-         else
-            lot = riskMoney / (slPips * moneyPerPipPerLot);
+            return 0.0;
+         lot = riskMoney / (slPips * moneyPerPipPerLot);
         }
      }
 
