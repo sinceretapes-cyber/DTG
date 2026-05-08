@@ -40,6 +40,20 @@ enum ENUM_TRAIL_MODE
 // For EURUSD / FX use the FX profile in README.md.
 // Daily limits are 0 by default (off) so backtests aren't halted; set them
 // back to 1.0 / 2.0 (or your own values) when going to demo / live.
+
+//--- Trend filter
+// Only take longs when the just-closed M1 candle's close is above ALL
+// enabled MAs, and only take shorts when below ALL enabled MAs. MAs are
+// computed on a higher timeframe so they actually capture trend.
+input group                "=== Trend Filter ==="
+input bool                 InpUseTrendFilter       = true;        // Enable MA trend filter
+input ENUM_TIMEFRAMES      InpTrendMATimeframe     = PERIOD_M5;   // Timeframe MAs are computed on
+input ENUM_MA_METHOD       InpTrendMAMethod        = MODE_SMA;    // SMA / EMA / SMMA / LWMA
+input bool                 InpTrendUseFastMA       = true;        // Require price vs fast MA
+input int                  InpTrendFastMAPeriod    = 20;          // Fast MA period
+input bool                 InpTrendUseSlowMA       = true;        // Require price vs slow MA
+input int                  InpTrendSlowMAPeriod    = 50;          // Slow MA period
+
 input group                "=== Strategy ==="
 input bool                 InpTradeBullish        = true;   // Trade bullish setups (buy stop)
 input bool                 InpTradeBearish        = true;   // Trade bearish setups (sell stop)
@@ -145,6 +159,8 @@ datetime g_currentDay     = 0;
 double   g_dayStartEquity = 0.0;
 bool     g_dailyHalt      = false;
 int      g_atrHandle      = INVALID_HANDLE;
+int      g_fastMAHandle   = INVALID_HANDLE;
+int      g_slowMAHandle   = INVALID_HANDLE;
 ulong    g_partialedTickets[];   // tickets that have already had their partial close fired
 
 //+------------------------------------------------------------------+
@@ -176,12 +192,38 @@ int OnInit()
       return(INIT_FAILED);
      }
 
+   if(InpUseTrendFilter)
+     {
+      if(InpTrendUseFastMA)
+        {
+         g_fastMAHandle = iMA(_Symbol, InpTrendMATimeframe,
+                              InpTrendFastMAPeriod, 0,
+                              InpTrendMAMethod, PRICE_CLOSE);
+         if(g_fastMAHandle == INVALID_HANDLE)
+           {
+            Print("OneMinuteScalper: failed to create fast MA handle");
+            return(INIT_FAILED);
+           }
+        }
+      if(InpTrendUseSlowMA)
+        {
+         g_slowMAHandle = iMA(_Symbol, InpTrendMATimeframe,
+                              InpTrendSlowMAPeriod, 0,
+                              InpTrendMAMethod, PRICE_CLOSE);
+         if(g_slowMAHandle == INVALID_HANDLE)
+           {
+            Print("OneMinuteScalper: failed to create slow MA handle");
+            return(INIT_FAILED);
+           }
+        }
+     }
+
    g_currentDay     = 0;
    g_dayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
    g_dailyHalt      = false;
    g_lastBarTime    = (datetime)iTime(_Symbol, PERIOD_M1, 0);
 
-   PrintFormat("OneMinuteScalper init: digits=%d pip=%.*f magic=%I64d build=2026-05-08-v2",
+   PrintFormat("OneMinuteScalper init: digits=%d pip=%.*f magic=%I64d build=2026-05-08-v3",
                g_digits, g_digits, g_pip, InpMagic);
    PrintFormat("Inputs A: RiskPct=%.4f FixedLot=%.2f LotMode=%d MaxOpenPos=%d",
                InpRiskPercent, InpFixedLot, (int)InpLotMode, InpMaxOpenPositions);
@@ -195,6 +237,11 @@ int OnInit()
                InpExitOnOppositeCandle ? "true" : "false",
                InpUseSessionFilter     ? "true" : "false",
                InpBreakevenTriggerPips, InpTrailStartPips, InpATRTrailStartMult);
+   PrintFormat("Inputs E: TrendFilter=%s TF=%d Method=%d FastMA=%s/%d SlowMA=%s/%d",
+               InpUseTrendFilter       ? "true" : "false",
+               (int)InpTrendMATimeframe, (int)InpTrendMAMethod,
+               InpTrendUseFastMA       ? "true" : "false", InpTrendFastMAPeriod,
+               InpTrendUseSlowMA       ? "true" : "false", InpTrendSlowMAPeriod);
    return(INIT_SUCCEEDED);
   }
 
@@ -204,6 +251,16 @@ void OnDeinit(const int reason)
      {
       IndicatorRelease(g_atrHandle);
       g_atrHandle = INVALID_HANDLE;
+     }
+   if(g_fastMAHandle != INVALID_HANDLE)
+     {
+      IndicatorRelease(g_fastMAHandle);
+      g_fastMAHandle = INVALID_HANDLE;
+     }
+   if(g_slowMAHandle != INVALID_HANDLE)
+     {
+      IndicatorRelease(g_slowMAHandle);
+      g_slowMAHandle = INVALID_HANDLE;
      }
   }
 
@@ -217,6 +274,50 @@ double GetCurrentATR()
    // Index 1 = last completed bar's ATR (more stable than the live forming bar)
    if(CopyBuffer(g_atrHandle, 0, 1, 1, buf) <= 0) return 0.0;
    return buf[0];
+  }
+
+//+------------------------------------------------------------------+
+//| Trend filter helpers                                             |
+//+------------------------------------------------------------------+
+double GetMAValue(int handle)
+  {
+   if(handle == INVALID_HANDLE) return 0.0;
+   double buf[];
+   // Index 1 = last completed bar of the MA's timeframe (stable, not repainting)
+   if(CopyBuffer(handle, 0, 1, 1, buf) <= 0) return 0.0;
+   return buf[0];
+  }
+
+bool TrendAllowsBuy(double price)
+  {
+   if(!InpUseTrendFilter) return true;
+   if(InpTrendUseFastMA)
+     {
+      double ma = GetMAValue(g_fastMAHandle);
+      if(ma > 0 && price < ma) return false;
+     }
+   if(InpTrendUseSlowMA)
+     {
+      double ma = GetMAValue(g_slowMAHandle);
+      if(ma > 0 && price < ma) return false;
+     }
+   return true;
+  }
+
+bool TrendAllowsSell(double price)
+  {
+   if(!InpUseTrendFilter) return true;
+   if(InpTrendUseFastMA)
+     {
+      double ma = GetMAValue(g_fastMAHandle);
+      if(ma > 0 && price > ma) return false;
+     }
+   if(InpTrendUseSlowMA)
+     {
+      double ma = GetMAValue(g_slowMAHandle);
+      if(ma > 0 && price > ma) return false;
+     }
+   return true;
   }
 
 //+------------------------------------------------------------------+
@@ -271,9 +372,23 @@ void OnNewM1Bar()
    if(InpMaxCandleSizePips > 0 && rangePips > InpMaxCandleSizePips) return;
 
    if(cl > op && InpTradeBullish)
+     {
+      if(!TrendAllowsBuy(cl))
+        {
+         if(InpVerboseLog) Print("Skip BUY: against trend filter");
+         return;
+        }
       PlaceBuyStop(hi, lo);
+     }
    else if(cl < op && InpTradeBearish)
+     {
+      if(!TrendAllowsSell(cl))
+        {
+         if(InpVerboseLog) Print("Skip SELL: against trend filter");
+         return;
+        }
       PlaceSellStop(lo, hi);
+     }
   }
 
 //+------------------------------------------------------------------+

@@ -75,6 +75,20 @@ MT5/Experts/OneMinuteScalper.mq5
 
 | Input | Default | What it does |
 |---|---|---|
+### Trend Filter
+
+| Input | Default | What it does |
+|---|---|---|
+| `InpUseTrendFilter` | `true` | Master switch for the MA-based trend filter. When on, the EA only takes longs in an uptrend and shorts in a downtrend (price relative to MA(s)). |
+| `InpTrendMATimeframe` | `PERIOD_M5` | Timeframe the MAs are computed on. M5 is the default — high enough to actually capture trend, low enough that an M1 entry is still "fresh" relative to it. Try `PERIOD_M15` for stricter filtering. |
+| `InpTrendMAMethod` | `MODE_SMA` | `MODE_SMA`, `MODE_EMA`, `MODE_SMMA`, or `MODE_LWMA`. EMA reacts faster, SMA is smoother. |
+| `InpTrendUseFastMA` | `true` | Require price vs the fast MA. Set false to use only the slow MA. |
+| `InpTrendFastMAPeriod` | `20` | Fast MA period. |
+| `InpTrendUseSlowMA` | `true` | Require price vs the slow MA. Set false to use only the fast MA. |
+| `InpTrendSlowMAPeriod` | `50` | Slow MA period. |
+
+The rule: a buy is only placed if the just-closed M1 candle's close is **above all enabled MAs**. A sell only if it's **below all enabled MAs**. With both MAs enabled, this behaves as a confluence filter (price above both 20 and 50). Disable one to relax it.
+
 ### Exit Logic
 
 | Input | Default | What it does |
