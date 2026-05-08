@@ -53,32 +53,32 @@ MT5/Experts/OneMinuteScalper.mq5
 |---|---|---|
 | `InpTradeBullish` | `true` | Take long setups (bullish signal candles). |
 | `InpTradeBearish` | `true` | Take short setups (bearish signal candles). |
-| `InpEntryBufferPips` | `0.5` | How many pips above the high (or below the low) to place the stop entry. A small buffer reduces "wick-only" fills. Set to `0` to enter exactly at the high/low. |
+| `InpEntryBufferPips` | `1.0` | How many pips above the high (or below the low) to place the stop entry. A small buffer reduces "wick-only" fills. Set to `0` to enter exactly at the high/low. |
 | `InpUsePendingExpiry` | `true` | Cancel the pending if it doesn't fill quickly. |
 | `InpPendingExpirySec` | `60` | How long the pending order is valid for (one minute by default = current candle only). |
-| `InpMinCandleSizePips` | `0.8` | Skip dojis / micro-candles. |
-| `InpMaxCandleSizePips` | `25` | Skip absurdly large candles where the stop would be huge (set `0` to disable). |
-| `InpMaxSpreadPips` | `2.0` | Skip the trade if spread is wider than this (set `0` to disable). |
+| `InpMinCandleSizePips` | `5.0` | Skip dojis / micro-candles. |
+| `InpMaxCandleSizePips` | `0` | Skip absurdly large candles where the stop would be huge (`0` = disabled). |
+| `InpMaxSpreadPips` | `0` | Skip the trade if spread is wider than this (`0` = disabled). |
 
 ### Stop loss / take profit
 
 | Input | Default | What it does |
 |---|---|---|
 | `InpSLMode` | `SL_CANDLE_EXTREME` | `SL_CANDLE_EXTREME` parks SL just beyond the signal candle's other extreme. `SL_FIXED_PIPS` uses a fixed pip distance instead. |
-| `InpSLBufferPips` | `1.0` | Buffer pips beyond the candle low/high when using `SL_CANDLE_EXTREME`. |
+| `InpSLBufferPips` | `2.0` | Buffer pips beyond the candle low/high when using `SL_CANDLE_EXTREME`. |
 | `InpSLFixedPips` | `8.0` | Fixed pip stop, only used in `SL_FIXED_PIPS` mode. |
-| `InpMinSLPips` | `2.0` | Reject trades whose SL distance is implausibly tight. |
-| `InpMaxSLPips` | `30.0` | Reject trades whose SL distance is huge (set `0` to disable). |
+| `InpMinSLPips` | `5.0` | Reject trades whose SL distance is implausibly tight (which would size into a huge lot). |
+| `InpMaxSLPips` | `0` | Reject trades whose SL distance is huge (`0` = disabled). |
 | `InpTakeProfitPips` | `0.0` | Optional fixed TP. `0` means no TP at all — let the trailing stop close the trade. |
 
 ### Break-even & trailing
 
 | Input | Default | What it does |
 |---|---|---|
-| `InpBreakevenTriggerPips` | `3.0` | Move SL to break-even (+ buffer) when this much profit is reached. |
-| `InpBreakevenBufferPips` | `0.5` | Pips locked in at BE (so you cover spread / commission). |
-| `InpTrailStartPips` | `5.0` | Start the trailing stop after this much profit. |
-| `InpTrailDistancePips` | `3.0` | Distance the trailing stop sits behind price. |
+| `InpBreakevenTriggerPips` | `8.0` | Move SL to break-even (+ buffer) when this much profit is reached. |
+| `InpBreakevenBufferPips` | `1.0` | Pips locked in at BE (so you cover spread / commission). |
+| `InpTrailStartPips` | `15.0` | Start the trailing stop after this much profit. |
+| `InpTrailDistancePips` | `8.0` | Distance the trailing stop sits behind price. |
 
 ### Money management
 
@@ -86,15 +86,15 @@ MT5/Experts/OneMinuteScalper.mq5
 |---|---|---|
 | `InpLotMode` | `LOT_RISK_PERCENT` | `LOT_FIXED` uses `InpFixedLot`. `LOT_RISK_PERCENT` sizes lots so that the SL = `InpRiskPercent` of equity. |
 | `InpFixedLot` | `0.01` | Lot size in fixed mode. |
-| `InpRiskPercent` | `0.5` | Risk per trade in % of equity. |
+| `InpRiskPercent` | `0.25` | Risk per trade in % of equity. |
 | `InpMaxOpenPositions` | `1` | Max positions opened by this EA on this symbol concurrently. |
 
 ### Daily limits
 
 | Input | Default | What it does |
 |---|---|---|
-| `InpDailyProfitTarget` | `1.0` | Stops opening new trades after +X% on the day. (Existing trades keep their trailing stop.) Set `0` to disable. |
-| `InpDailyLossLimit` | `2.0` | Stops opening new trades after -X% on the day. Set `0` to disable. |
+| `InpDailyProfitTarget` | `0` | Stops opening new trades after +X% on the day. **Defaults to off so backtests run uninterrupted.** Set to `1.0` for live. |
+| `InpDailyLossLimit` | `0` | Stops opening new trades after -X% on the day. **Defaults to off for backtesting.** Set to `2.0` for live. |
 
 ### Session filter
 

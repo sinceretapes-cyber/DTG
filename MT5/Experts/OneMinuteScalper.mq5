@@ -30,43 +30,49 @@ enum ENUM_SL_MODE
   };
 
 //--- Strategy inputs
+// Defaults below are tuned for XAUUSD (gold) on M1 and for backtesting.
+// For EURUSD / FX use the FX profile in README.md.
+// Daily limits are 0 by default (off) so backtests aren't halted; set them
+// back to 1.0 / 2.0 (or your own values) when going to demo / live.
 input group                "=== Strategy ==="
 input bool                 InpTradeBullish        = true;   // Trade bullish setups (buy stop)
 input bool                 InpTradeBearish        = true;   // Trade bearish setups (sell stop)
-input double               InpEntryBufferPips     = 0.5;    // Entry buffer beyond candle (pips)
+input double               InpEntryBufferPips     = 1.0;    // Entry buffer beyond candle (pips)
 input bool                 InpUsePendingExpiry    = true;   // Cancel pending if not filled fast
 input int                  InpPendingExpirySec    = 60;     // Pending order expiry (seconds)
-input double               InpMinCandleSizePips   = 0.8;    // Minimum signal candle range (pips)
-input double               InpMaxCandleSizePips   = 25.0;   // Maximum signal candle range (pips, 0 = off)
-input double               InpMaxSpreadPips       = 2.0;    // Max allowed spread (pips, 0 = off)
+input double               InpMinCandleSizePips   = 5.0;    // Minimum signal candle range (pips)
+input double               InpMaxCandleSizePips   = 0;      // Maximum signal candle range (pips, 0 = off)
+input double               InpMaxSpreadPips       = 0;      // Max allowed spread (pips, 0 = off)
 
 //--- Stop loss / Take profit
 input group                "=== Stop Loss / Take Profit ==="
 input ENUM_SL_MODE         InpSLMode              = SL_CANDLE_EXTREME; // Stop loss mode
-input double               InpSLBufferPips        = 1.0;    // SL buffer beyond candle extreme (pips)
+input double               InpSLBufferPips        = 2.0;    // SL buffer beyond candle extreme (pips)
 input double               InpSLFixedPips         = 8.0;    // Fixed SL (pips), used in SL_FIXED_PIPS mode
-input double               InpMinSLPips           = 2.0;    // Minimum acceptable SL distance (pips)
-input double               InpMaxSLPips           = 30.0;   // Max acceptable SL distance (pips, 0 = off)
+input double               InpMinSLPips           = 5.0;    // Minimum acceptable SL distance (pips)
+input double               InpMaxSLPips           = 0;      // Max acceptable SL distance (pips, 0 = off)
 input double               InpTakeProfitPips      = 0.0;    // Take profit (pips, 0 = none / let trail close)
 
 //--- Break-even & trailing
 input group                "=== Break-even & Trailing ==="
-input double               InpBreakevenTriggerPips = 3.0;   // Move SL to BE after this profit (pips)
-input double               InpBreakevenBufferPips  = 0.5;   // Lock-in pips at break-even
-input double               InpTrailStartPips       = 5.0;   // Start trailing after this profit (pips)
-input double               InpTrailDistancePips    = 3.0;   // Trail distance behind price (pips)
+input double               InpBreakevenTriggerPips = 8.0;   // Move SL to BE after this profit (pips)
+input double               InpBreakevenBufferPips  = 1.0;   // Lock-in pips at break-even
+input double               InpTrailStartPips       = 15.0;  // Start trailing after this profit (pips)
+input double               InpTrailDistancePips    = 8.0;   // Trail distance behind price (pips)
 
 //--- Money management
 input group                "=== Money Management ==="
 input ENUM_LOT_MODE        InpLotMode              = LOT_RISK_PERCENT; // Lot sizing mode
 input double               InpFixedLot             = 0.01;  // Fixed lot size
-input double               InpRiskPercent          = 0.5;   // Risk % per trade
+input double               InpRiskPercent          = 0.25;  // Risk % per trade
 input int                  InpMaxOpenPositions     = 1;     // Max simultaneous positions
 
 //--- Daily limits
+// Note: 0 / 0 here disables the daily halt so backtests run uninterrupted.
+// For demo/live use, suggest 1.0 (profit target) and 2.0 (loss limit).
 input group                "=== Daily Limits ==="
-input double               InpDailyProfitTarget    = 1.0;   // Halt new trades after +X% (0 = off)
-input double               InpDailyLossLimit       = 2.0;   // Halt new trades after -X% (0 = off)
+input double               InpDailyProfitTarget    = 0;     // Halt new trades after +X% (0 = off)
+input double               InpDailyLossLimit       = 0;     // Halt new trades after -X% (0 = off)
 
 //--- Session filter
 input group                "=== Session Filter ==="
