@@ -51,12 +51,17 @@ input double               InpMaxCandleSizePips   = 0;      // Maximum signal ca
 input double               InpMaxSpreadPips       = 0;      // Max allowed spread (pips, 0 = off)
 
 //--- Stop loss / Take profit
+// SL_FIXED_PIPS is the recommended default for gold: every trade gets a
+// predictable tight SL regardless of how wide the signal candle was, so
+// no signals are rejected for being "too wide" and lot sizing is stable.
+// Switch to SL_CANDLE_EXTREME if you want SL parked just past the signal
+// candle's opposite extreme (more natural on tighter FX pairs).
 input group                "=== Stop Loss / Take Profit ==="
-input ENUM_SL_MODE         InpSLMode              = SL_CANDLE_EXTREME; // Stop loss mode
-input double               InpSLBufferPips        = 0.5;    // SL buffer beyond candle extreme (pips)
-input double               InpSLFixedPips         = 8.0;    // Fixed SL (pips), used in SL_FIXED_PIPS mode
+input ENUM_SL_MODE         InpSLMode              = SL_FIXED_PIPS;     // Stop loss mode
+input double               InpSLFixedPips         = 12.0;   // Fixed SL (pips), used in SL_FIXED_PIPS mode
+input double               InpSLBufferPips        = 0.5;    // SL buffer beyond candle extreme (pips, used in SL_CANDLE_EXTREME mode)
 input double               InpMinSLPips           = 5.0;    // Minimum acceptable SL distance (pips)
-input double               InpMaxSLPips           = 20.0;   // Max acceptable SL distance (pips, 0 = off) — caps wide candles
+input double               InpMaxSLPips           = 0;      // Max acceptable SL distance (pips, 0 = off)
 input double               InpTakeProfitPips      = 0.0;    // Take profit (pips, 0 = none / let trail close)
 
 //--- Break-even & trailing

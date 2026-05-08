@@ -64,11 +64,11 @@ MT5/Experts/OneMinuteScalper.mq5
 
 | Input | Default | What it does |
 |---|---|---|
-| `InpSLMode` | `SL_CANDLE_EXTREME` | `SL_CANDLE_EXTREME` parks SL just beyond the signal candle's other extreme. `SL_FIXED_PIPS` uses a fixed pip distance instead. |
+| `InpSLMode` | `SL_FIXED_PIPS` | `SL_FIXED_PIPS` (default) puts a fixed pip stop on every trade — predictable, never rejected. `SL_CANDLE_EXTREME` parks SL just past the signal candle's other extreme (more natural on tight FX pairs but produces wide stops on noisy symbols like gold). |
+| `InpSLFixedPips` | `12.0` | Fixed pip stop, used in `SL_FIXED_PIPS` mode. |
 | `InpSLBufferPips` | `0.5` | Buffer pips beyond the candle low/high when using `SL_CANDLE_EXTREME`. |
-| `InpSLFixedPips` | `8.0` | Fixed pip stop, only used in `SL_FIXED_PIPS` mode. |
 | `InpMinSLPips` | `5.0` | Reject trades whose SL distance is implausibly tight (which would size into a huge lot). |
-| `InpMaxSLPips` | `20.0` | Reject trades whose SL distance is huge (`0` = disabled). Caps wide-candle outliers. |
+| `InpMaxSLPips` | `0` | Reject trades whose SL distance is huge (`0` = disabled). Only relevant in `SL_CANDLE_EXTREME` mode. |
 | `InpTakeProfitPips` | `0.0` | Optional fixed TP. `0` means no TP at all — let the trailing stop close the trade. |
 
 ### Break-even & trailing
