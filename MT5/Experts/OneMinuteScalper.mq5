@@ -48,7 +48,7 @@ input bool                 InpUsePendingExpiry    = true;   // Cancel pending if
 input int                  InpPendingExpirySec    = 60;     // Pending order expiry (seconds)
 input double               InpMinCandleSizePips   = 5.0;    // Minimum signal candle range (pips)
 input double               InpMaxCandleSizePips   = 0;      // Maximum signal candle range (pips, 0 = off)
-input double               InpMaxSpreadPips       = 0;      // Max allowed spread (pips, 0 = off)
+input double               InpMaxSpreadPips       = 10;     // Max allowed spread (pips, 0 = off) — protects against gap-open spread blowups
 
 //--- Stop loss / Take profit
 // SL_FIXED_PIPS is the recommended default for gold: every trade gets a

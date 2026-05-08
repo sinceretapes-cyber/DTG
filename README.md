@@ -58,7 +58,7 @@ MT5/Experts/OneMinuteScalper.mq5
 | `InpPendingExpirySec` | `60` | How long the pending order is valid for (one minute by default = current candle only). |
 | `InpMinCandleSizePips` | `5.0` | Skip dojis / micro-candles. |
 | `InpMaxCandleSizePips` | `0` | Skip absurdly large candles where the stop would be huge (`0` = disabled). |
-| `InpMaxSpreadPips` | `0` | Skip the trade if spread is wider than this (`0` = disabled). |
+| `InpMaxSpreadPips` | `10` | Skip the trade if spread is wider than this. **Important** on gold — without it, weekend gap-opens or news spikes can hand you 50-100+ pip spread costs before price even moves. `0` = disabled. |
 
 ### Stop loss / take profit
 
