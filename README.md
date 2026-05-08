@@ -1,304 +1,186 @@
-# DTG — One-Minute Candle Scalper EA (MT5)
+# DTG — Bar-by-Bar Breakout EA (MT5)
 
-A simple, focused MetaTrader 5 Expert Advisor that scalps the 1-minute timeframe.
-The idea is exactly what you described:
+A deliberately simple MetaTrader 5 Expert Advisor. The strategy in one
+sentence:
 
-- When the previous M1 candle **closes bullish**, place a **buy stop** at that
-  candle's high. If price breaks the high within the next minute, you're long.
-- When the previous M1 candle **closes bearish**, place a **sell stop** at that
-  candle's low. If price breaks the low within the next minute, you're short.
-- Initial stop loss is parked beyond the **opposite extreme** of the signal
-  candle (the low for buys, the high for sells), with a small buffer.
-- Once the trade moves a few pips into profit it ratchets the stop to
-  **break-even**, and once it's clearly running it switches to a **trailing
-  stop** a few pips behind price.
-- Pending orders that don't fill within the new minute are cancelled — we only
-  ever chase the latest signal.
+> On every new bar, look at the candle that just closed. If it was bullish,
+> place a buy stop at its high (+ a few pips). If it was bearish, place a
+> sell stop at its low (- a few pips). When the next bar opens (i.e. our
+> candle has closed), close the position at market regardless of P&L.
+> Repeat forever.
 
-The EA file lives at:
+Position lifetime is **one candle, max**. There is no trailing stop, no
+break-even, no trend filter, no take profit. The only safety net is a
+catastrophic SL in case price spikes hard against you mid-candle.
 
-```
-MT5/Experts/OneMinuteScalper.mq5
-```
+The EA file lives at `MT5/Experts/OneMinuteScalper.mq5`.
 
 ---
 
-## Install / Run
+## Install
 
-1. Open MetaTrader 5 → `File → Open Data Folder`.
-2. Copy `MT5/Experts/OneMinuteScalper.mq5` into `MQL5/Experts/`.
-3. In MT5, open `Navigator → Expert Advisors`, right-click → **Refresh**.
-4. Open a chart for the symbol you want to trade and switch the chart to
-   **M1** (the strategy reads the M1 candles directly via `iOpen/iHigh/iLow/
-   iClose`, so the chart timeframe is mostly cosmetic, but M1 is the natural
-   one for monitoring).
-5. Drag `OneMinuteScalper` onto the chart.
-6. On the **Common** tab tick *Allow Algo Trading* / *Allow live trading*.
-7. On the **Inputs** tab tune the parameters (see below).
-8. Make sure the global `Algo Trading` button at the top of the platform is
-   green.
-
-> **Test in Strategy Tester first.** Use *Every tick based on real ticks* on a
-> recent date range to get a realistic feel for spread and slippage on the M1
-> timeframe before going live. Demo it on a live demo account for at least a
-> few sessions before risking real money.
+1. MT5 → `File → Open Data Folder` → navigate into `MQL5/Experts/`.
+2. Copy `OneMinuteScalper.mq5` into that folder (or paste its contents
+   into MetaEditor and save). On Mac, the bulletproof method is:
+   - In MT5 press `F4` → MetaEditor opens.
+   - `File → New File → Expert Advisor (template) → Continue → Continue → Finish`
+     and call it `OneMinuteScalper`.
+   - Wipe the generated template (`Cmd+A`, `Delete`).
+   - Paste the contents of `OneMinuteScalper.mq5`.
+   - `Cmd+S`, then `F7` to compile. The Errors pane should show
+     `0 errors, 0 warnings`.
+3. In MT5, refresh `Navigator → Expert Advisors`. Drag `OneMinuteScalper`
+   onto a chart of the symbol you want to trade.
+4. Set the **chart timeframe to whatever bar size you want to trade** —
+   M1, M5, M15. The EA reads `_Period`, so the chart timeframe IS the
+   strategy timeframe.
+5. On the EA's Common tab, tick **Allow Algo Trading**. Make sure the
+   global Algo Trading button at the top of MT5 is green.
 
 ---
 
-## Inputs (with sensible starting values)
+## Inputs
 
 ### Strategy
 
 | Input | Default | What it does |
 |---|---|---|
-| `InpTradeBullish` | `true` | Take long setups (bullish signal candles). |
-| `InpTradeBearish` | `true` | Take short setups (bearish signal candles). |
-| `InpEntryBufferPips` | `1.0` | How many pips above the high (or below the low) to place the stop entry. A small buffer reduces "wick-only" fills. Set to `0` to enter exactly at the high/low. |
-| `InpUsePendingExpiry` | `true` | Cancel the pending if it doesn't fill quickly. |
-| `InpPendingExpirySec` | `60` | How long the pending order is valid for (one minute by default = current candle only). |
-| `InpMinCandleSizePips` | `5.0` | Skip dojis / micro-candles. |
-| `InpMaxCandleSizePips` | `0` | Skip absurdly large candles where the stop would be huge (`0` = disabled). |
-| `InpMaxSpreadPips` | `10` | Skip the trade if spread is wider than this. **Important** on gold — without it, weekend gap-opens or news spikes can hand you 50-100+ pip spread costs before price even moves. `0` = disabled. |
+| `InpTradeBullish` | `true` | Take longs after bullish bars. |
+| `InpTradeBearish` | `true` | Take shorts after bearish bars. |
+| `InpEntryBufferPips` | `1.0` | Pips above the previous high (or below the previous low) at which the stop entry is parked. `0` = at the exact high/low. A small buffer reduces wick-only fills. |
 
-### Stop loss / take profit
+### Stop Loss
 
 | Input | Default | What it does |
 |---|---|---|
-| `InpSLMode` | `SL_FIXED_PIPS` | `SL_FIXED_PIPS` (default) puts a fixed pip stop on every trade — predictable, never rejected. `SL_CANDLE_EXTREME` parks SL just past the signal candle's other extreme (more natural on tight FX pairs but produces wide stops on noisy symbols like gold). |
-| `InpSLFixedPips` | `12.0` | Fixed pip stop, used in `SL_FIXED_PIPS` mode. |
-| `InpSLBufferPips` | `0.5` | Buffer pips beyond the candle low/high when using `SL_CANDLE_EXTREME`. |
-| `InpMinSLPips` | `5.0` | Reject trades whose SL distance is implausibly tight (which would size into a huge lot). |
-| `InpMaxSLPips` | `0` | Reject trades whose SL distance is huge (`0` = disabled). Only relevant in `SL_CANDLE_EXTREME` mode. |
-| `InpTakeProfitPips` | `0.0` | Optional fixed TP. `0` means no TP at all — let the trailing stop close the trade. |
+| `InpStopLossPips` | `30.0` | Catastrophic SL distance in pips. The EA exits at bar close, but a fast adverse spike could move further than the timeframe's normal range — this catches that. **Tune to your timeframe and symbol.** Suggested starting points: M1 gold `30`, M5 gold `60-100`, M1 EURUSD `15`, M5 EURUSD `25`. |
 
-### Break-even & trailing
+### Money Management
 
 | Input | Default | What it does |
 |---|---|---|
-### Trend Filter
-
-| Input | Default | What it does |
-|---|---|---|
-| `InpUseTrendFilter` | `true` | Master switch for the MA-based trend filter. When on, the EA only takes longs in an uptrend and shorts in a downtrend (price relative to MA(s)). |
-| `InpTrendMATimeframe` | `PERIOD_M5` | Timeframe the MAs are computed on. M5 is the default — high enough to actually capture trend, low enough that an M1 entry is still "fresh" relative to it. Try `PERIOD_M15` for stricter filtering. |
-| `InpTrendMAMethod` | `MODE_SMA` | `MODE_SMA`, `MODE_EMA`, `MODE_SMMA`, or `MODE_LWMA`. EMA reacts faster, SMA is smoother. |
-| `InpTrendUseFastMA` | `true` | Require price vs the fast MA. Set false to use only the slow MA. |
-| `InpTrendFastMAPeriod` | `20` | Fast MA period. |
-| `InpTrendUseSlowMA` | `true` | Require price vs the slow MA. Set false to use only the fast MA. |
-| `InpTrendSlowMAPeriod` | `50` | Slow MA period. |
-
-The rule: a buy is only placed if the just-closed M1 candle's close is **above all enabled MAs**. A sell only if it's **below all enabled MAs**. With both MAs enabled, this behaves as a confluence filter (price above both 20 and 50). Disable one to relax it.
-
-### Exit Logic
-
-| Input | Default | What it does |
-|---|---|---|
-| `InpExitOnOppositeCandle` | `true` | **Primary exit.** On the close of every M1 candle, if the candle's direction is opposite to your open position, the EA closes that position at market — regardless of P&L. So a buy stays open as long as each new candle keeps closing bullish, and exits the moment the first bearish candle closes. Mirror for sells. |
-| `InpPartialProfitPips` | `0` | Optional dynamic profit-locking. When in profit by this many pips, close part of the position. `0` disables partial closes (rest of trade rides until opposite-candle exit). |
-| `InpPartialClosePct` | `30` | What % of the position to close at the partial milestone. Only used if `InpPartialProfitPips > 0`. |
-
-### Break-even & Trailing (optional, off by default)
-
-These are off out of the box — the opposite-candle close is the exit. Set the trigger / start values to a non-zero number to layer them on top of the opposite-candle exit (whichever fires first wins).
-
-| Input | Default | What it does |
-|---|---|---|
-| `InpBreakevenTriggerPips` | `0` | Move SL to break-even (+ buffer) when this much profit is reached (`0` = off). |
-| `InpBreakevenBufferPips` | `1.0` | Pips locked in at BE (so you cover spread / commission). |
-| `InpTrailMode` | `TRAIL_ATR` | `TRAIL_FIXED_PIPS` uses fixed pip distance. `TRAIL_ATR` scales the trail with current volatility (recommended on noisy symbols like gold). |
-| `InpTrailStartPips` | `0` | *(FIXED mode only)* Start trailing after this much profit (`0` = off). |
-| `InpTrailDistancePips` | `15.0` | *(FIXED mode only)* Distance the trailing stop sits behind price. |
-| `InpATRTimeframe` | `PERIOD_M5` | *(ATR mode)* Timeframe to read ATR from. M5 is smoother than M1. |
-| `InpATRPeriod` | `14` | *(ATR mode)* ATR averaging period. |
-| `InpATRTrailStartMult` | `0` | *(ATR mode)* Start trailing once profit ≥ ATR × this (`0` = off). |
-| `InpATRTrailDistMult` | `2.0` | *(ATR mode)* Trail distance = ATR × this. |
-
-### Money management
-
-| Input | Default | What it does |
-|---|---|---|
-| `InpLotMode` | `LOT_RISK_PERCENT` | `LOT_FIXED` uses `InpFixedLot`. `LOT_RISK_PERCENT` sizes lots so that the SL = `InpRiskPercent` of equity. |
+| `InpLotMode` | `LOT_RISK_PERCENT` | `LOT_FIXED` uses `InpFixedLot`. `LOT_RISK_PERCENT` sizes the lot so that hitting `InpStopLossPips` = `InpRiskPercent` of equity. |
 | `InpFixedLot` | `0.01` | Lot size in fixed mode. |
-| `InpRiskPercent` | `0.05` | Risk per trade in % of equity. |
-| `InpMaxOpenPositions` | `1` | Max positions opened by this EA on this symbol concurrently. |
+| `InpRiskPercent` | `0.25` | Risk per trade as % of equity. With `InpStopLossPips=30` and `InpRiskPercent=0.25`, a $1k account risks $2.50 per trade and uses ~0.08 lots on gold. |
 
-### Daily limits
-
-| Input | Default | What it does |
-|---|---|---|
-| `InpDailyProfitTarget` | `0` | Stops the algo after +X% on the day. `0` = disabled (default — EA runs continuously). Pendings cancel and (with `InpCloseAllOnDailyHalt=true`) open positions are closed. Resets at next server day. |
-| `InpDailyLossLimit` | `0` | Stops the algo after -X% on the day, same flatten-and-halt behaviour. `0` = disabled. |
-| `InpCloseAllOnDailyHalt` | `true` | If `true`, hitting either daily limit closes all open positions immediately. If `false`, the limits only halt *new* entries and let existing trades run their trail. |
-
-### Session filter
+### Filters
 
 | Input | Default | What it does |
 |---|---|---|
-| `InpUseSessionFilter` | `false` | Restrict trading to a window. Set to `true` to enable the GMT/server-time filter below. |
-| `InpSessionUseGMT` | `true` | If `true`, the start/end times below are interpreted in **GMT** (recommended — same numbers regardless of broker). If `false`, they're interpreted in your **broker's server time**. |
-| `InpBrokerGMTOffset` | `3` | Your broker's server offset from GMT, in hours. Only used when `InpSessionUseGMT = true`. Most MT5 brokers (Exness, IC Markets, FBS, RoboForex) run on **GMT+3 in summer / GMT+2 in winter**. Pepperstone, FXCM and a few others run on GMT+0. **You can find this in the broker's server name** (e.g. *Exness-MT5Real6* = GMT+3) or by comparing the clock at the top-right of MT5 to your local time. |
-| `InpStartHour` / `InpStartMinute` | `13:30` | Window start. Default = NY equity open in GMT during US daylight time. |
-| `InpEndHour` / `InpEndMinute` | `20:00` | Window end. Default = NY equity close in GMT during US daylight time. Wraps midnight if start > end. |
-
-> **Why a manual offset and not auto-detect?** The MT5 Strategy Tester deliberately runs in a fixed timezone — `TimeGMT()` returns broker server time during a backtest, not real GMT. Without an explicit offset the session filter would silently apply the wrong window in your tests. Setting the offset once is a one-line operation and keeps live/tester behaviour identical.
-
-### NY session reference (set these in `InpStartHour` / `InpEndHour`)
-
-With `InpSessionUseGMT = true`:
-
-| What you want | DST (≈ Mar – early Nov) | Standard time (≈ Nov – Mar) |
-|---|---|---|
-| **NY equity** (9:30 AM – 4:00 PM ET) | `13:30 → 20:00` GMT *(default)* | `14:30 → 21:00` GMT |
-| **NY forex** (8:00 AM – 5:00 PM ET) | `12:00 → 21:00` GMT | `13:00 → 22:00` GMT |
-| **NY full incl. after-hours** (4:00 AM – 8:00 PM ET) | `08:00 → 00:00` GMT | `09:00 → 01:00` GMT |
-
-When the US switches DST in March / November, bump the hours by 1 to keep matching NY local time. Or just use the **NY forex** range — it's wide enough to comfortably cover the equity session even if you forget to adjust for DST.
+| `InpMaxSpreadPips` | `10.0` | Skip placing a new pending if spread is wider than this. **Important** on gold to avoid the weekend gap-open scenario where spread blows out to 50+ pips. `0` disables the check. |
 
 ### Misc
 
 | Input | Default | What it does |
 |---|---|---|
 | `InpMagic` | `9001` | Magic number — change if you run more than one instance. |
-| `InpComment` | `1mScalper` | Trade comment. |
-| `InpVerboseLog` | `true` | Print order placement events to the Experts log. |
+| `InpComment` | `barRider` | Trade comment. |
+| `InpVerboseLog` | `true` | Print order placements / closes / skips to the Experts log. |
 
 ---
 
 ## Strategy logic, in detail
 
-### Entry — every M1 candle
+### One bar at a time
 
-On every new M1 bar the EA:
+The EA acts only at bar boundaries. On each new bar:
 
-1. Cancels any leftover pending orders from the previous minute.
-2. Reads the **just-closed** candle (index 1) and runs the opposite-candle
-   exit logic against it (see below).
-3. Checks filters: session window, max open positions, spread, candle size.
-4. If the just-closed candle was:
-   - Bullish (`close > open`) → places a `BuyStop` at `high + entry_buffer`.
-   - Bearish (`close < open`) → places a `SellStop` at `low - entry_buffer`.
-   - Doji (`close == open`) → skipped.
-5. Sets the initial SL (default: a fixed `InpSLFixedPips` distance) as
-   catastrophic protection. Sizes the lot so that hitting the SL =
-   `InpRiskPercent` of current equity.
-6. The pending order is cancelled by the EA after `InpPendingExpirySec`
-   (default 60s) — if the high/low isn't broken in the next candle, no fill.
+1. **Close any of our open positions at market.** That position belongs to
+   the previous bar; the previous bar has just closed; therefore the
+   position closes — regardless of whether it's in profit or drawdown.
+2. **Cancel any of our pending orders.** They were valid for the bar we
+   just left; they don't carry over.
+3. **Read the just-closed bar (index 1).**
+   - `close > open` (bullish) → place a `BuyStop` at `high + EntryBuffer`.
+   - `close < open` (bearish) → place a `SellStop` at `low - EntryBuffer`.
+   - `close == open` (doji) → skip.
+4. The pending order has a catastrophic `InpStopLossPips` SL attached (used
+   only if a spike runs past it before bar close).
 
-### Exit — opposite-candle close
+### Lifecycle of a single trade
 
-On every new M1 bar, **before** evaluating the new signal, the EA looks at
-the just-closed candle's direction:
+```
+bar N-1: bullish close
+─────────────────────────────────────────────────────────────────
+bar N opens
+  EA places BuyStop at bar N-1's high + buffer
+  Some time inside bar N price breaks the high → fill
+  Position is open with the catastrophic SL parked far below
+bar N closes / bar N+1 opens
+  EA closes the position at market on the very first tick of bar N+1
+  P&L = (close-of-bar-N - fill-price) × lots, regardless of sign
+```
 
-- Holding a **buy** + candle closed **bullish** → hold (let it run).
-- Holding a **buy** + candle closed **bearish** → close at market, P&L
-  doesn't matter. The trend that put us in is over.
-- Holding a **sell** + candle closed **bearish** → hold.
-- Holding a **sell** + candle closed **bullish** → close at market.
-- Doji on either side → hold.
+If price never broke the previous high during bar N, the pending was
+cancelled at the start of bar N+1 and no trade was taken.
 
-So a winning streak of bullish candles after a bullish-signal entry rides
-all the way until the first bearish close, capturing the whole trend leg.
+### Fully timeframe-agnostic
 
-### Optional: dynamic profit locking
+The EA reads `_Period`, which is the chart's timeframe. So:
 
-If you set `InpPartialProfitPips > 0`, once the trade is up by that many
-pips the EA closes `InpPartialClosePct`% of the position at market and
-keeps the remainder running until the opposite-candle close. Useful for
-locking some money in before letting the rest ride a runner.
+- Drop it on **M1** chart → trades each minute.
+- Drop it on **M5** chart → trades each 5-minute bar.
+- Drop it on **M15** chart → trades each 15-minute bar.
+- … and so on.
 
-### Optional: break-even & trailing stop
-
-Off by default. If you set `InpBreakevenTriggerPips > 0` or one of the
-trail-start values > 0, those mechanics layer on top — whichever exit
-trigger (BE / trail / opposite candle) fires first wins. The SL only ever
-ratchets in your favor.
-
-### Catastrophic protection
-
-The initial fixed SL is always there even though it rarely fires (the
-opposite-candle exit usually closes the trade first). It's the safety net
-for flash moves where price gaps or spikes through the next candle's open
-before any close-direction logic can react.
-
-The broker's `SYMBOL_TRADE_STOPS_LEVEL` is respected on every order and
-modification, so the EA won't be rejected for placing stops too close.
+Bigger timeframes generate fewer, larger trades; smaller timeframes more
+trades but smaller per-trade size.
 
 ---
 
-## Recommended starting profiles
+## Honest notes
 
-These are starting points only; tune them to the symbol and your account. All
-pip values assume 5/3-digit pricing (the EA auto-detects this).
-
-**Tight, high-frequency forex scalp (EURUSD, USDJPY, GBPUSD, low-spread broker)**
-
-```
-InpEntryBufferPips      = 0.5
-InpSLBufferPips         = 1.0
-InpMinCandleSizePips    = 1.0
-InpMaxCandleSizePips    = 15.0
-InpMaxSpreadPips        = 1.5
-InpBreakevenTriggerPips = 3.0
-InpBreakevenBufferPips  = 0.5
-InpTrailStartPips       = 5.0
-InpTrailDistancePips    = 3.0
-InpRiskPercent          = 0.5
-InpDailyProfitTarget    = 1.0
-InpDailyLossLimit       = 2.0
-```
-
-**More room for indices / gold (XAUUSD, US500, NAS100)**
-
-Indices and gold move in much larger increments. Treat the "pip" inputs as
-points-of-the-minimum-tick scaled by 10. Reasonable starting values:
-
-```
-InpEntryBufferPips      = 1.0
-InpSLBufferPips         = 2.0
-InpMinCandleSizePips    = 5.0
-InpMaxCandleSizePips    = 0           (disable)
-InpMaxSpreadPips        = 0           (disable; gold/indices spreads vary)
-InpBreakevenTriggerPips = 8.0
-InpBreakevenBufferPips  = 1.0
-InpTrailStartPips       = 15.0
-InpTrailDistancePips    = 8.0
-InpRiskPercent          = 0.25
-```
+- The EA places a trade on every bar that has a clear directional close
+  (everything except dojis). It will trade through low-volatility periods,
+  news spikes, and rollover unless you stop it manually or layer on a
+  filter.
+- Bar-close exit means you're capped to **one bar of profit** even if a
+  trend is starting. There is no trailing stop in this version. If you
+  want to ride trends past a single bar, that's a different strategy
+  (the `v1` of this EA had that behaviour and is in git history if you
+  ever want to revive it).
+- Spread + commission scales with trade frequency. On M1 with a 1-pip
+  spread/commission cost per round-trip, you're paying that on every bar.
+  Run on a low-spread / ECN account.
+- Backtest with **Every tick based on real ticks** to get realistic spread
+  behaviour. Synthetic ticks under-estimate spread cost.
 
 ---
 
-## Honest notes about "1% per day"
+## Quick troubleshooting
 
-A few realistic notes — not to talk you out of it, just to keep expectations
-sane so the EA gets used well:
-
-- **1% / day compounded is ~12.7× per year.** Nobody sustainably hits that on
-  a 1-minute breakout strategy on a live retail account. Use it as a daily
-  target to *stop trading early* (which the EA already does via
-  `InpDailyProfitTarget`), not as an expectation.
-- **Spread and commission are the real enemy on M1.** A 0.5 pip raw spread +
-  $7/lot commission round-trip can easily eat 1.5–2 pips per trade. Run the
-  EA on a low-spread / commission account (RAW / ECN) and use the
-  `InpMaxSpreadPips` filter aggressively.
-- **News spikes will whipsaw this strategy.** Either pause it manually around
-  high-impact news, or pair it with an external news filter if you want
-  fully hands-off operation.
-- **Candle-extreme stops are sometimes very tight on inside-bar candles.**
-  That's why `InpMinSLPips` exists — it skips trades where the SL is
-  unrealistically small.
-- **Backtest with real-tick data.** "Every tick" mode in MT5 Strategy Tester
-  uses real spreads from history if you have it; this is essential at this
-  timeframe.
+| Symptom | Likely cause / fix |
+|---|---|
+| EA loaded but no trades | Algo Trading not enabled (toolbar + EA Common tab). Or all bars are doji-close. Or spread permanently > `InpMaxSpreadPips`. Check the Journal. |
+| Lots are way bigger than expected | `InpLotMode` is `LOT_RISK_PERCENT` and `InpStopLossPips` is set very small, sizing the lot huge. Either widen the SL or drop the risk %. |
+| Lots are 0 / "invalid volume" | Account too small for your risk %, or broker minimum is bigger than the calculated lot. Use `LOT_FIXED` with `InpFixedLot=0.01` to verify. |
+| Pendings keep getting "invalid stops" | Broker has an unusually high `STOPS_LEVEL`. Increase `InpEntryBufferPips` and `InpStopLossPips`. |
+| Spread filter rejects everything | Drop `InpMaxSpreadPips` and re-test. On wide-spread brokers (or during off-hours) gold spreads can sit at 5-15 pips routinely. |
+| One trade then nothing | Check `Inputs` tab — left-over values from previous runs are notoriously sticky in MT5's tester. Manually retype values if needed. The Journal prints all inputs at startup; verify the build tag matches the source. |
 
 ---
 
-## Possible follow-ups (easy to add)
+## Diagnostics in the Journal
 
-- ATR-based dynamic SL/trail (auto-adapts to volatility).
-- Higher-timeframe trend filter (e.g. only take longs when 15m EMA slope is
-  up) — useful to cut the chop.
-- News blackout window (skip trades N minutes around scheduled releases).
-- Per-symbol parameter sets so you can attach the EA to a basket.
-- Partial close at +N pips with the rest left on the trailing stop.
+At startup the EA prints lines like:
 
-Tell me which of these (if any) you want and I'll bolt them on.
+```
+BarRider init: TF=PERIOD_M1 digits=2 pip=0.01 magic=9001 build=2026-05-08-v5
+Inputs: EntryBuf=1.0 SLPips=30.0 LotMode=1 Risk=0.2500% FixedLot=0.01 MaxSpread=10.0
+Inputs: TradeBull=true TradeBear=true
+```
+
+If `build=2026-05-08-v5` doesn't appear, you're running an older compile —
+recompile in MetaEditor (`F7`).
+
+During trading you'll see:
+
+```
+BuyStop placed: lot=0.08 entry=4825.71 sl=4825.41 slPips=30.0
+Closed #142 at bar end (P/L 12.40)
+SellStop placed: lot=0.08 entry=4823.10 sl=4823.40 slPips=30.0
+Closed #143 at bar end (P/L -8.20)
+...
+```
+
+That's the whole life of a trade in two log lines.
