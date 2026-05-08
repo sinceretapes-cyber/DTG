@@ -106,7 +106,7 @@ MT5/Experts/OneMinuteScalper.mq5
 
 | Input | Default | What it does |
 |---|---|---|
-| `InpUseSessionFilter` | `true` | Restrict trading to a window. |
+| `InpUseSessionFilter` | `false` | Restrict trading to a window. Set to `true` to enable the GMT/server-time filter below. |
 | `InpSessionUseGMT` | `true` | If `true`, the start/end times below are interpreted in **GMT** (recommended — same numbers regardless of broker). If `false`, they're interpreted in your **broker's server time**. |
 | `InpBrokerGMTOffset` | `3` | Your broker's server offset from GMT, in hours. Only used when `InpSessionUseGMT = true`. Most MT5 brokers (Exness, IC Markets, FBS, RoboForex) run on **GMT+3 in summer / GMT+2 in winter**. Pepperstone, FXCM and a few others run on GMT+0. **You can find this in the broker's server name** (e.g. *Exness-MT5Real6* = GMT+3) or by comparing the clock at the top-right of MT5 to your local time. |
 | `InpStartHour` / `InpStartMinute` | `13:30` | Window start. Default = NY equity open in GMT during US daylight time. |

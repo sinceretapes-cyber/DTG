@@ -107,7 +107,7 @@ input bool                 InpCloseAllOnDailyHalt  = true;  // Close open positi
 // "Exness-MT5Real6" runs on GMT+3 in EEST), or by comparing the time at
 // the top-right of MT5 to your local clock.
 input group                "=== Session Filter ==="
-input bool                 InpUseSessionFilter     = true;  // Restrict to a trading window
+input bool                 InpUseSessionFilter     = false; // Restrict to a trading window
 input bool                 InpSessionUseGMT        = true;  // true = times below are GMT; false = broker server time
 input int                  InpBrokerGMTOffset      = 3;     // Broker server's GMT offset in hours (only used when InpSessionUseGMT=true)
 input int                  InpStartHour            = 13;    // Start hour
