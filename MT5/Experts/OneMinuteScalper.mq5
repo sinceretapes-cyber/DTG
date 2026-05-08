@@ -92,7 +92,7 @@ input double               InpATRTrailDistMult     = 2.0;   // [ATR mode] Trail 
 input group                "=== Money Management ==="
 input ENUM_LOT_MODE        InpLotMode              = LOT_RISK_PERCENT; // Lot sizing mode
 input double               InpFixedLot             = 0.01;  // Fixed lot size
-input double               InpRiskPercent          = 0.25;  // Risk % per trade
+input double               InpRiskPercent          = 0.05;  // Risk % per trade
 input int                  InpMaxOpenPositions     = 1;     // Max simultaneous positions
 
 //--- Daily limits

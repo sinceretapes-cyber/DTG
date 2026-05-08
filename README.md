@@ -105,7 +105,7 @@ These are off out of the box — the opposite-candle close is the exit. Set the 
 |---|---|---|
 | `InpLotMode` | `LOT_RISK_PERCENT` | `LOT_FIXED` uses `InpFixedLot`. `LOT_RISK_PERCENT` sizes lots so that the SL = `InpRiskPercent` of equity. |
 | `InpFixedLot` | `0.01` | Lot size in fixed mode. |
-| `InpRiskPercent` | `0.25` | Risk per trade in % of equity. |
+| `InpRiskPercent` | `0.05` | Risk per trade in % of equity. Sized so the 0.25% daily target needs ~5 net winners (not just one). |
 | `InpMaxOpenPositions` | `1` | Max positions opened by this EA on this symbol concurrently. |
 
 ### Daily limits
