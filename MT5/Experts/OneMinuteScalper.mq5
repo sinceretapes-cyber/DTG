@@ -29,6 +29,12 @@ enum ENUM_SL_MODE
    SL_FIXED_PIPS     = 1  // Fixed pip stop loss
   };
 
+enum ENUM_TRAIL_MODE
+  {
+   TRAIL_FIXED_PIPS = 0, // Trail at a fixed pip distance behind price
+   TRAIL_ATR        = 1  // Trail at ATR * multiplier (adapts to volatility)
+  };
+
 //--- Strategy inputs
 // Defaults below are tuned for XAUUSD (gold) on M1 and for backtesting.
 // For EURUSD / FX use the FX profile in README.md.
@@ -54,11 +60,19 @@ input double               InpMaxSLPips           = 0;      // Max acceptable SL
 input double               InpTakeProfitPips      = 0.0;    // Take profit (pips, 0 = none / let trail close)
 
 //--- Break-even & trailing
+// TRAIL_ATR is recommended: trail distance scales with current volatility,
+// so noisy candles don't clip out winners. ATR is read from the timeframe
+// you set in InpATRTimeframe (default M5 — smoother than M1).
 input group                "=== Break-even & Trailing ==="
-input double               InpBreakevenTriggerPips = 8.0;   // Move SL to BE after this profit (pips)
+input double               InpBreakevenTriggerPips = 10.0;  // Move SL to BE after this profit (pips)
 input double               InpBreakevenBufferPips  = 1.0;   // Lock-in pips at break-even
-input double               InpTrailStartPips       = 15.0;  // Start trailing after this profit (pips)
-input double               InpTrailDistancePips    = 8.0;   // Trail distance behind price (pips)
+input ENUM_TRAIL_MODE      InpTrailMode            = TRAIL_ATR; // How to trail the stop
+input double               InpTrailStartPips       = 20.0;  // [FIXED mode] Start trailing after this profit (pips)
+input double               InpTrailDistancePips    = 15.0;  // [FIXED mode] Trail distance behind price (pips)
+input ENUM_TIMEFRAMES      InpATRTimeframe         = PERIOD_M5; // [ATR mode] Timeframe for ATR
+input int                  InpATRPeriod            = 14;    // [ATR mode] ATR period
+input double               InpATRTrailStartMult    = 1.0;   // [ATR mode] Start trailing after profit >= ATR * this
+input double               InpATRTrailDistMult     = 2.0;   // [ATR mode] Trail distance = ATR * this
 
 //--- Money management
 input group                "=== Money Management ==="
@@ -100,6 +114,7 @@ datetime g_lastBarTime    = 0;
 datetime g_currentDay     = 0;
 double   g_dayStartEquity = 0.0;
 bool     g_dailyHalt      = false;
+int      g_atrHandle      = INVALID_HANDLE;
 
 //+------------------------------------------------------------------+
 //| Init / deinit                                                    |
@@ -123,6 +138,13 @@ int OnInit()
    trade.SetTypeFillingBySymbol(_Symbol);
    trade.SetDeviationInPoints(20);
 
+   g_atrHandle = iATR(_Symbol, InpATRTimeframe, InpATRPeriod);
+   if(g_atrHandle == INVALID_HANDLE)
+     {
+      Print("OneMinuteScalper: failed to create ATR indicator handle");
+      return(INIT_FAILED);
+     }
+
    g_currentDay     = 0;
    g_dayStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);
    g_dailyHalt      = false;
@@ -133,7 +155,26 @@ int OnInit()
    return(INIT_SUCCEEDED);
   }
 
-void OnDeinit(const int reason) { }
+void OnDeinit(const int reason)
+  {
+   if(g_atrHandle != INVALID_HANDLE)
+     {
+      IndicatorRelease(g_atrHandle);
+      g_atrHandle = INVALID_HANDLE;
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Read the most recent completed ATR value (price units)           |
+//+------------------------------------------------------------------+
+double GetCurrentATR()
+  {
+   if(g_atrHandle == INVALID_HANDLE) return 0.0;
+   double buf[];
+   // Index 1 = last completed bar's ATR (more stable than the live forming bar)
+   if(CopyBuffer(g_atrHandle, 0, 1, 1, buf) <= 0) return 0.0;
+   return buf[0];
+  }
 
 //+------------------------------------------------------------------+
 //| Tick handler                                                     |
@@ -345,6 +386,32 @@ void ManageOpenPositions()
    double bid         = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double ask         = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
+   // Compute trailing thresholds once per tick, in price units.
+   // FIXED mode: use the *Pips inputs.
+   // ATR mode:   use ATR * multipliers.
+   double trailStartPrice = 0.0;
+   double trailDistPrice  = 0.0;
+   if(InpTrailMode == TRAIL_ATR)
+     {
+      double atr = GetCurrentATR();
+      if(atr > 0)
+        {
+         trailStartPrice = atr * InpATRTrailStartMult;
+         trailDistPrice  = atr * InpATRTrailDistMult;
+        }
+      else
+        {
+         // Fallback to fixed inputs if ATR isn't ready yet (warm-up)
+         trailStartPrice = InpTrailStartPips    * g_pip;
+         trailDistPrice  = InpTrailDistancePips * g_pip;
+        }
+     }
+   else
+     {
+      trailStartPrice = InpTrailStartPips    * g_pip;
+      trailDistPrice  = InpTrailDistancePips * g_pip;
+     }
+
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
       if(!posInfo.SelectByIndex(i)) continue;
@@ -358,19 +425,20 @@ void ManageOpenPositions()
 
       if(posInfo.PositionType() == POSITION_TYPE_BUY)
         {
-         double profitPips = (bid - entry) / g_pip;
+         double profitPrice = bid - entry;
          double newSL = sl;
 
-         if(InpBreakevenTriggerPips > 0 && profitPips >= InpBreakevenTriggerPips)
+         // Break-even ratchet (always pip-based — predictable threshold)
+         if(InpBreakevenTriggerPips > 0 && profitPrice >= InpBreakevenTriggerPips * g_pip)
            {
             double bePrice = NormalizeDouble(entry + InpBreakevenBufferPips * g_pip, g_digits);
             if(bePrice > newSL) newSL = bePrice;
            }
 
-         if(InpTrailStartPips > 0 && InpTrailDistancePips > 0 &&
-            profitPips >= InpTrailStartPips)
+         // Trailing stop
+         if(trailStartPrice > 0 && trailDistPrice > 0 && profitPrice >= trailStartPrice)
            {
-            double trailSL = NormalizeDouble(bid - InpTrailDistancePips * g_pip, g_digits);
+            double trailSL = NormalizeDouble(bid - trailDistPrice, g_digits);
             if(trailSL > newSL) newSL = trailSL;
            }
 
@@ -383,19 +451,18 @@ void ManageOpenPositions()
         }
       else if(posInfo.PositionType() == POSITION_TYPE_SELL)
         {
-         double profitPips = (entry - ask) / g_pip;
+         double profitPrice = entry - ask;
          double newSL = sl;
 
-         if(InpBreakevenTriggerPips > 0 && profitPips >= InpBreakevenTriggerPips)
+         if(InpBreakevenTriggerPips > 0 && profitPrice >= InpBreakevenTriggerPips * g_pip)
            {
             double bePrice = NormalizeDouble(entry - InpBreakevenBufferPips * g_pip, g_digits);
             if(newSL == 0 || bePrice < newSL) newSL = bePrice;
            }
 
-         if(InpTrailStartPips > 0 && InpTrailDistancePips > 0 &&
-            profitPips >= InpTrailStartPips)
+         if(trailStartPrice > 0 && trailDistPrice > 0 && profitPrice >= trailStartPrice)
            {
-            double trailSL = NormalizeDouble(ask + InpTrailDistancePips * g_pip, g_digits);
+            double trailSL = NormalizeDouble(ask + trailDistPrice, g_digits);
             if(newSL == 0 || trailSL < newSL) newSL = trailSL;
            }
 

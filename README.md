@@ -75,10 +75,15 @@ MT5/Experts/OneMinuteScalper.mq5
 
 | Input | Default | What it does |
 |---|---|---|
-| `InpBreakevenTriggerPips` | `8.0` | Move SL to break-even (+ buffer) when this much profit is reached. |
+| `InpBreakevenTriggerPips` | `10.0` | Move SL to break-even (+ buffer) when this much profit is reached. |
 | `InpBreakevenBufferPips` | `1.0` | Pips locked in at BE (so you cover spread / commission). |
-| `InpTrailStartPips` | `15.0` | Start the trailing stop after this much profit. |
-| `InpTrailDistancePips` | `8.0` | Distance the trailing stop sits behind price. |
+| `InpTrailMode` | `TRAIL_ATR` | `TRAIL_FIXED_PIPS` uses fixed pip distance. `TRAIL_ATR` scales the trail with current volatility (recommended on noisy symbols like gold). |
+| `InpTrailStartPips` | `20.0` | *(FIXED mode only)* Start trailing after this much profit. |
+| `InpTrailDistancePips` | `15.0` | *(FIXED mode only)* Distance the trailing stop sits behind price. |
+| `InpATRTimeframe` | `PERIOD_M5` | *(ATR mode)* Timeframe to read ATR from. M5 is smoother than M1 and gives more stable trail distances. |
+| `InpATRPeriod` | `14` | *(ATR mode)* ATR averaging period. |
+| `InpATRTrailStartMult` | `1.0` | *(ATR mode)* Start trailing once profit ≥ ATR × this. |
+| `InpATRTrailDistMult` | `2.0` | *(ATR mode)* Trail distance = ATR × this. Increase to give winners more room. |
 
 ### Money management
 
