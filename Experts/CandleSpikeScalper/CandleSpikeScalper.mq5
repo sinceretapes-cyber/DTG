@@ -344,7 +344,6 @@ void ProcessTimeframe(int idx)
    trade.SetExpertMagicNumber((ulong)magic);
    trade.SetDeviationInPoints(InpDeviationPoints);
    trade.SetTypeFillingBySymbol(_Symbol);
-   trade.SetTypeTime(tt);
 
    string cmt = StringFormat("%s|%s", InpComment, TFName(tf));
 
