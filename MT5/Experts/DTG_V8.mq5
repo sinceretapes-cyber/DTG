@@ -71,6 +71,7 @@ input group                "=== Misc ==="
 input long                 InpMagic              = 8200;     // Magic number
 input string               InpComment            = "DTG_V8"; // Trade comment
 input bool                 InpVerboseLog         = true;     // Verbose journal logging
+input bool                 InpDiagnostics        = true;     // Per-bar gate-state snapshot in journal
 
 //============================ GLOBALS ==============================
 CTrade        trade;
@@ -194,6 +195,18 @@ int OnInit()
    // is the geometric midpoint of entry/tp2 (always true for V8's 1:2 RR).
    ReattachToLivePosition();
 
+   // Auto-trading guards. The EA can't place orders if any of these are
+   // off — and MT5 fails such calls silently in some configurations, so
+   // we surface them at init.
+   if(!(bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
+      Print("WARNING: Terminal trading is DISABLED (toolbar 'AutoTrading' button). EA will not place orders.");
+   if(!(bool)MQLInfoInteger(MQL_TRADE_ALLOWED))
+      Print("WARNING: Trading is not permitted for this EA (chart properties — Common tab — 'Allow Algo Trading' is off).");
+   if(!(bool)AccountInfoInteger(ACCOUNT_TRADE_ALLOWED))
+      Print("WARNING: Trading is DISABLED on the account (broker/server side).");
+   if(!(bool)AccountInfoInteger(ACCOUNT_TRADE_EXPERT))
+      Print("WARNING: Account does not allow EA/expert trading.");
+
    PrintFormat("DTG V8 init: TF=%s digits=%d pip=%.*f spreadTick=%.*f magic=%I64d",
                EnumToString(_Period), g_digits, g_digits, g_pip, g_digits, g_spreadTick, InpMagic);
    PrintFormat("Symbol class: XAU=%s XAG=%s FX=%s Crypto=%s Index=%s Oil=%s",
@@ -277,7 +290,7 @@ void OnNewBar()
    // 7) Compute Step-1 bias and Step-2 zone-tap state.
    int bias6[6];
    double htfO[6], htfH[6], htfL[6], htfC[6];
-   if(!FetchHTFData(htfO, htfH, htfL, htfC, bias6)) return;
+   int htfOk = FetchHTFData(htfO, htfH, htfL, htfC, bias6);
 
    int sumBias = bias6[0] + bias6[1] + bias6[2] + bias6[3] + bias6[4] + bias6[5];
    int overallBias = (sumBias >=  2) ? 1 : (sumBias <= -2) ? -1 : 0;
@@ -300,32 +313,94 @@ void OnNewBar()
       g_stepTwoBias = 0;
      }
 
+   // Per-bar diagnostic snapshot — visible when InpDiagnostics is true.
+   // Lets you see at a glance which gate is or isn't satisfied each bar.
+   if(InpDiagnostics)
+      LogGateState(htfOk, sumBias, overallBias, inWindow, anyDashSignalable);
+
    // 9) Step-3: EM1 detection on the just-closed chart bar.
    bool em1Buy=false, em1Sell=false;
-   DetectEM1(em1Buy, em1Sell, overallBias, inWindow);
-   if(!em1Buy && !em1Sell) return;
-   if(em1Buy  && !InpEnableLong)  return;
-   if(em1Sell && !InpEnableShort) return;
+   string em1Reason = "";
+   DetectEM1(em1Buy, em1Sell, overallBias, inWindow, em1Reason);
+   if(!em1Buy && !em1Sell)
+     {
+      if(InpDiagnostics && em1Reason != "")
+         PrintFormat("  EM1: no fire — %s", em1Reason);
+      return;
+     }
+   if(em1Buy  && !InpEnableLong)
+     {
+      if(InpVerboseLog) Print("EM1 BUY pattern fired but InpEnableLong=false — skipped.");
+      return;
+     }
+   if(em1Sell && !InpEnableShort)
+     {
+      if(InpVerboseLog) Print("EM1 SELL pattern fired but InpEnableShort=false — skipped.");
+      return;
+     }
 
    // 10) System gate.
    bool stepTwoValid = InpRequireZoneTap
                        ? (g_stepTwoMet && g_stepTwoBias == overallBias && overallBias != 0 && anyDashSignalable)
                        : (overallBias != 0);
-   if(!stepTwoValid) return;
+   if(!stepTwoValid)
+     {
+      if(InpVerboseLog)
+         PrintFormat("EM1 %s pattern fired BUT system gate failed: stepTwoMet=%s stepTwoBias=%d overallBias=%d anyDashSignalable=%s requireTap=%s",
+                     em1Buy ? "BUY" : "SELL",
+                     g_stepTwoMet ? "Y" : "N", g_stepTwoBias, overallBias,
+                     anyDashSignalable ? "Y" : "N",
+                     InpRequireZoneTap ? "Y" : "N");
+      return;
+     }
 
    // 11) FIRE — compute V8 entry/SL/TP1/TP2 from bar-1 high/low and place
    //     a stop pending order with 1-bar expiration.
    FireSignal(em1Buy);
   }
 
+// One-line summary of every signal gate. Throttled to once per chart bar
+// so the journal stays readable. Format chosen so a human can scan a
+// strip of bars and see immediately why nothing is firing.
+void LogGateState(int htfOk, int sumBias, int overallBias, bool inWindow, bool anyDashSignalable)
+  {
+   string touched = "";
+   string lblTF[6] = { "4H","6H","8H","12H","D","W" };
+   for(int i = 0; i < 6; i++)
+     {
+      if(g_dashStk[i])
+         touched += (StringLen(touched) > 0 ? "+" : "") + lblTF[i];
+      if(g_locked[i])
+         touched += (StringLen(touched) > 0 ? "+" : "") + lblTF[i] + "*"; // * = locked
+     }
+   if(StringLen(touched) == 0) touched = "none";
+   PrintFormat("DIAG bar=%s | bias=%+d (sum=%+d, htfOk=%d/6) | window=%s | touched=%s | step2=%s/%+d | dayLock=%s",
+               TimeToString((datetime)iTime(_Symbol, _Period, 0), TIME_DATE | TIME_MINUTES),
+               overallBias, sumBias, htfOk,
+               inWindow ? "Y" : "N",
+               touched,
+               g_stepTwoMet ? "Y" : "N", g_stepTwoBias,
+               g_dailyProfitTaken ? "Y" : "N");
+  }
+
 //============================ HTF / BIAS / WINDOW ==================
 // Returns prior-bar (shift=1) OHLC of the six monitored TFs and each
 // candle's direction (+1 bullish / -1 bearish / 0 doji).
 // 1:1 mapping with Pine's request.security(... [open[1], close[1], ...]).
-bool FetchHTFData(double &op[], double &hi[], double &lo[], double &cl[], int &bias[])
+//
+// Missing HTF data (iOpen returning 0 because MT5 hasn't loaded that TF
+// yet) is treated as bias=0 / zone-unavailable, NOT fatal. Pine handles
+// na the same way — a TF with no data simply contributes 0 to the bias
+// sum. Returning false here would silently kill all signals on a fresh
+// chart until W1 finished loading, which can take many bars in tester.
+//
+// Returns the count of TFs that successfully provided data (0..6) so
+// callers can short-circuit if literally nothing is available.
+int FetchHTFData(double &op[], double &hi[], double &lo[], double &cl[], int &bias[])
   {
    ENUM_TIMEFRAMES tfs[6] = { PERIOD_H4, PERIOD_H6, PERIOD_H8, PERIOD_H12, PERIOD_D1, PERIOD_W1 };
    ArrayResize(op, 6); ArrayResize(hi, 6); ArrayResize(lo, 6); ArrayResize(cl, 6); ArrayResize(bias, 6);
+   int ok = 0;
    for(int i = 0; i < 6; i++)
      {
       op[i] = iOpen (_Symbol, tfs[i], 1);
@@ -334,13 +409,14 @@ bool FetchHTFData(double &op[], double &hi[], double &lo[], double &cl[], int &b
       cl[i] = iClose(_Symbol, tfs[i], 1);
       if(op[i] <= 0 || cl[i] <= 0 || hi[i] <= 0 || lo[i] <= 0)
         {
-         if(InpVerboseLog)
-            PrintFormat("HTF data not ready (TF=%s shift=1) — wait.", EnumToString(tfs[i]));
-         return false;
+         op[i] = hi[i] = lo[i] = cl[i] = 0.0;
+         bias[i] = 0;
+         continue;
         }
       bias[i] = (cl[i] > op[i]) ? 1 : (cl[i] < op[i]) ? -1 : 0;
+      ok++;
      }
-   return true;
+   return ok;
   }
 
 // V8 trading window: H4 candles 3-5 of the broker day. We compute the H4
@@ -394,8 +470,8 @@ void UpdateZoneState()
    ENUM_TIMEFRAMES tfs[6] = { PERIOD_H4, PERIOD_H6, PERIOD_H8, PERIOD_H12, PERIOD_D1, PERIOD_W1 };
    double op[6], hi[6], lo[6], cl[6];
    int bias[6];
-   if(!FetchHTFData(op, hi, lo, cl, bias))
-      return;
+   int htfOk = FetchHTFData(op, hi, lo, cl, bias);
+   if(htfOk == 0) return;
 
    int sumBias = bias[0] + bias[1] + bias[2] + bias[3] + bias[4] + bias[5];
    int overallBias = (sumBias >=  2) ? 1 : (sumBias <= -2) ? -1 : 0;
@@ -472,26 +548,26 @@ void UpdateZoneState()
 // Buy: bearish[3] → bullish[2] → bullish[1] with HH+HL on [1] vs [2]
 //      AND pct_change > 0.006 (EMA8 above EMA20)
 // Sell mirror.
-void DetectEM1(bool &buy, bool &sell, int overallBias, bool inWindow)
+void DetectEM1(bool &buy, bool &sell, int overallBias, bool inWindow, string &reason)
   {
-   buy = false; sell = false;
+   buy = false; sell = false; reason = "";
 
    double o1 = iOpen (_Symbol, _Period, 1), c1 = iClose(_Symbol, _Period, 1);
    double o2 = iOpen (_Symbol, _Period, 2), c2 = iClose(_Symbol, _Period, 2);
    double o3 = iOpen (_Symbol, _Period, 3), c3 = iClose(_Symbol, _Period, 3);
    double h1 = iHigh (_Symbol, _Period, 1), h2 = iHigh(_Symbol, _Period, 2);
    double l1 = iLow  (_Symbol, _Period, 1), l2 = iLow (_Symbol, _Period, 2);
-   if(o1 <= 0 || o2 <= 0 || o3 <= 0) return;
+   if(o1 <= 0 || o2 <= 0 || o3 <= 0) { reason = "chart history not ready"; return; }
 
    // EMA slope filter — replicate Pine's pct_change exactly. Read EMA at
    // shift=1 (the just-closed bar — what Pine's [1] references).
    double bufE8[1], bufE20[1];
-   if(CopyBuffer(g_hEMA8,  0, 1, 1, bufE8)  <= 0) return;
-   if(CopyBuffer(g_hEMA20, 0, 1, 1, bufE20) <= 0) return;
+   if(CopyBuffer(g_hEMA8,  0, 1, 1, bufE8)  <= 0) { reason = "EMA8 not ready";  return; }
+   if(CopyBuffer(g_hEMA20, 0, 1, 1, bufE20) <= 0) { reason = "EMA20 not ready"; return; }
    double e8  = bufE8[0];
    double e20 = bufE20[0];
    double trendAvg  = (e8 + e20) * 0.5;
-   if(trendAvg == 0.0) return;
+   if(trendAvg == 0.0) { reason = "EMA trendAvg=0"; return; }
    double pctChange = 100.0 * (e8 - e20) / trendAvg;
 
    // V8 asset-class filter (mirrors filt_common_*):
@@ -502,10 +578,12 @@ void DetectEM1(bool &buy, bool &sell, int overallBias, bool inWindow)
    bool   xauxag   = (g_isXAU || g_isXAG);
    bool   intradayTF = (PeriodSeconds(_Period) < PeriodSeconds(PERIOD_D1)) &&
                        (xauxag || tfMin >= 15);
-   if(!intradayTF) return;
+   if(!intradayTF) { reason = StringFormat("chart TF too small (TF=%dmin, need >=15 unless XAU/XAG)", tfMin); return; }
 
    bool windowOk = inWindow || !InpWindowOnly;
-   if(!windowOk) return;
+   if(!windowOk) { reason = "outside trading window"; return; }
+
+   if(overallBias == 0) { reason = "no bias"; return; }
 
    double op4h = iOpen (_Symbol, PERIOD_H4, 1);
    double cl4h = iClose(_Symbol, PERIOD_H4, 1);
@@ -524,6 +602,10 @@ void DetectEM1(bool &buy, bool &sell, int overallBias, bool inWindow)
       bool b3 = c1 > o1;            // bar [1] bullish
       bool b4 = h1 > h2 && l1 > l2; // HH+HL on [1] vs [2]
       buy = b1 && b2 && b3 && b4 && pctChange > 0.006;
+      if(!buy)
+         reason = StringFormat("BUY pattern miss (b3=%s b2=%s b1=%s HH+HL=%s slope=%.4f%%)",
+                               b1 ? "Y" : "N", b2 ? "Y" : "N", b3 ? "Y" : "N",
+                               b4 ? "Y" : "N", pctChange);
      }
    if(fcs)
      {
@@ -532,6 +614,10 @@ void DetectEM1(bool &buy, bool &sell, int overallBias, bool inWindow)
       bool s3 = c1 < o1;
       bool s4 = l1 < l2 && h1 < h2;
       sell = s1 && s2 && s3 && s4 && pctChange < -0.006;
+      if(!sell && reason == "")
+         reason = StringFormat("SELL pattern miss (b3=%s b2=%s b1=%s LL+LH=%s slope=%.4f%%)",
+                               s1 ? "Y" : "N", s2 ? "Y" : "N", s3 ? "Y" : "N",
+                               s4 ? "Y" : "N", pctChange);
      }
   }
 
