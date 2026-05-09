@@ -104,6 +104,11 @@ bool     g_stepTwoMet      = false;
 int      g_stepTwoBias     = 0;
 bool     g_dailyProfitTaken = false; // set true on TP1 hit when InpOneTradePerDay
 datetime g_currentBrokerDay = 0;     // 00:00 broker time of the current day
+bool     g_hadPosition      = false; // true once we've observed a live position
+                                     // for the current g_trade. Prevents the
+                                     // "Position closed" log + g_trade reset
+                                     // from firing while the order is still
+                                     // pending (not filled yet).
 
 // Live trade state — mirrors Pine's TradeState UDT.
 // 'entry/sl/tp1/tp2' captured at signal fire so we can manage TP1
@@ -706,15 +711,32 @@ void FireSignal(bool isBuy)
 void ManageLivePosition()
   {
    if(g_trade.dir == 0) return;             // no live state to manage
-   if(!HasLivePosition())                   // position closed (TP2 / SL hit)
+
+   bool hasPos = HasLivePosition();
+   if(!hasPos)
      {
-      if(InpVerboseLog)
-         PrintFormat("Position closed (TP2 or SL) — bias=%s tp1hit=%s",
-                     g_trade.dir == 1 ? "BUY" : "SELL",
-                     g_trade.tp1hit ? "Y" : "N");
-      ResetTradeState();
+      if(g_hadPosition)
+        {
+         // Position previously existed → it just closed via broker (TP2 or SL).
+         if(InpVerboseLog)
+            PrintFormat("Position closed (TP2 or SL) — bias=%s tp1hit=%s",
+                        g_trade.dir == 1 ? "BUY" : "SELL",
+                        g_trade.tp1hit ? "Y" : "N");
+         ResetTradeState();
+        }
+      else if(!HasOurPendingOrder())
+        {
+         // Pending expired/cancelled without ever filling. Quiet reset —
+         // not an interesting event for trade analysis.
+         ResetTradeState();
+        }
+      // else: pending still alive, waiting for fill. Keep g_trade intact so
+      //       TP1 management arms correctly the moment the broker fills it.
       return;
      }
+
+   // Position is live. Mark so that future close events log correctly.
+   g_hadPosition = true;
 
    if(g_trade.tp1hit) return;               // already split + BE'd
 
@@ -824,6 +846,18 @@ void ResetTradeState()
    g_trade.tp2     = 0.0;
    g_trade.barTime = 0;
    g_trade.tp1hit  = false;
+   g_hadPosition   = false;
+  }
+
+bool HasOurPendingOrder()
+  {
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+     {
+      if(!ordInfo.SelectByIndex(i)) continue;
+      if(ordInfo.Symbol() == _Symbol && ordInfo.Magic() == InpMagic)
+         return true;
+     }
+   return false;
   }
 
 // On EA reload mid-trade: rebuild g_trade from broker state. tp2 = position
@@ -849,6 +883,7 @@ void ReattachToLivePosition()
    g_trade.barTime = (datetime)posInfo.Time();
    // SL == entry within a tick → BE move already happened on prior session.
    g_trade.tp1hit  = (MathAbs(slP - openP) < SymbolInfoDouble(_Symbol, SYMBOL_POINT) * 1.5);
+   g_hadPosition   = true;   // we're attaching to a live position
    PrintFormat("Reattached to live position #%I64u dir=%s entry=%.*f sl=%.*f tp2=%.*f tp1hit=%s",
                tk, dir == 1 ? "BUY" : "SELL",
                g_digits, openP, g_digits, slP, g_digits, tpP,
