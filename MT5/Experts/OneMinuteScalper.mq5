@@ -55,6 +55,19 @@ input double               InpRiskPercent       = 0.25;   // Risk % per trade
 input group                "=== Filters ==="
 input double               InpMaxSpreadPips     = 10.0;   // Skip new entries if spread > this (0 = off)
 
+//--- Trading window
+// Restrict NEW entries to a time window. Existing positions still close at
+// the next bar regardless. Times use TimeLocal() = your PC's clock, so set
+// them in the same hours you'd read off your computer's taskbar / menubar.
+// Example: 16:30 -> 17:30 means only place entries between 4:30pm and 5:30pm
+// of your local PC time. Wraps midnight if start > end.
+input group                "=== Trading Window ==="
+input bool                 InpUseTimeWindow     = true;   // Restrict new entries to a time window
+input int                  InpStartHour         = 16;     // Start hour (PC local time, 0-23)
+input int                  InpStartMinute       = 30;     // Start minute
+input int                  InpEndHour           = 17;     // End hour
+input int                  InpEndMinute         = 30;     // End minute
+
 //--- Misc
 input group                "=== Misc ==="
 input long                 InpMagic             = 9001;   // Magic number
@@ -85,7 +98,7 @@ int OnInit()
 
    g_lastBarTime = (datetime)iTime(_Symbol, _Period, 0);
 
-   PrintFormat("BarRider init: TF=%s digits=%d pip=%.*f magic=%I64d build=2026-05-08-v5",
+   PrintFormat("BarRider init: TF=%s digits=%d pip=%.*f magic=%I64d build=2026-05-09-v6",
                EnumToString(_Period), g_digits, g_digits, g_pip, InpMagic);
    PrintFormat("Inputs: EntryBuf=%.1f SLPips=%.1f LotMode=%d Risk=%.4f%% FixedLot=%.2f MaxSpread=%.1f",
                InpEntryBufferPips, InpStopLossPips,
@@ -93,6 +106,9 @@ int OnInit()
    PrintFormat("Inputs: TradeBull=%s TradeBear=%s",
                InpTradeBullish ? "true" : "false",
                InpTradeBearish ? "true" : "false");
+   PrintFormat("Inputs: TimeWindow=%s %02d:%02d - %02d:%02d (PC local time)",
+               InpUseTimeWindow ? "true" : "false",
+               InpStartHour, InpStartMinute, InpEndHour, InpEndMinute);
    return(INIT_SUCCEEDED);
   }
 
@@ -128,6 +144,14 @@ void OnNewBar()
    double lo = iLow  (_Symbol, _Period, 1);
    if(op <= 0 || cl <= 0 || hi <= 0 || lo <= 0) return;
 
+   // Trading-window filter (PC local time). Existing positions still close
+   // at every bar regardless — this only gates NEW entries.
+   if(!IsWithinTradingWindow())
+     {
+      if(InpVerboseLog) Print("Skip: outside trading window");
+      return;
+     }
+
    // Spread filter (skip placing new entries if spread is abnormally wide)
    if(InpMaxSpreadPips > 0)
      {
@@ -147,6 +171,22 @@ void OnNewBar()
       PlaceSellStop(lo);
    else if(InpVerboseLog && cl == op)
       Print("Doji bar — skipped");
+  }
+
+//+------------------------------------------------------------------+
+//| True if the current PC local time is inside the configured       |
+//| trading window. Wraps midnight if start > end.                   |
+//+------------------------------------------------------------------+
+bool IsWithinTradingWindow()
+  {
+   if(!InpUseTimeWindow) return true;
+   MqlDateTime dt;
+   TimeToStruct(TimeLocal(), dt);
+   int cur   = dt.hour * 60 + dt.min;
+   int start = InpStartHour * 60 + InpStartMinute;
+   int end   = InpEndHour   * 60 + InpEndMinute;
+   if(start <= end) return (cur >= start && cur < end);
+   return (cur >= start || cur < end); // wraps midnight
   }
 
 //+------------------------------------------------------------------+

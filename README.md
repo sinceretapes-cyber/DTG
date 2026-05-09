@@ -69,6 +69,22 @@ The EA file lives at `MT5/Experts/OneMinuteScalper.mq5`.
 |---|---|---|
 | `InpMaxSpreadPips` | `10.0` | Skip placing a new pending if spread is wider than this. **Important** on gold to avoid the weekend gap-open scenario where spread blows out to 50+ pips. `0` disables the check. |
 
+### Trading Window
+
+Restricts new entries to a specific window each day. **Existing positions still close at the next bar regardless** — the window only gates whether new pending orders are placed.
+
+The times use `TimeLocal()`, i.e. **your PC's clock** — exactly what you read off your computer's taskbar / menubar. No broker / GMT conversion needed.
+
+| Input | Default | What it does |
+|---|---|---|
+| `InpUseTimeWindow` | `true` | Master switch for the window filter. |
+| `InpStartHour` | `16` | Window start hour (PC local time, 0-23). |
+| `InpStartMinute` | `30` | Window start minute. |
+| `InpEndHour` | `17` | Window end hour. |
+| `InpEndMinute` | `30` | Window end minute. Wraps midnight if start > end. |
+
+Default = **16:30 → 17:30 PC local time**, i.e. one hour each afternoon.
+
 ### Misc
 
 | Input | Default | What it does |
