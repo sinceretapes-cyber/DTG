@@ -12,10 +12,14 @@
 // User customisations vs. the V8 Pine source:
 //   • EM1 entry model only (no EM2/EM3/EM4)
 //   • Journal-only: no on-chart dashboard / RR boxes / labels
-//   • TP1 → partial close (default 50%) AND move SL to break-even
-//     (V8 Pro is BE-only; we layer partial close on top)
-//   • Daily lockout fires on TP1 hit ("1 trade a day after 1:1")
-//     V8 Pro fires it on TP2 — user explicitly chose tighter behaviour
+//   • Binary trade outcome — entry then either SL or TP at 1:2 R.
+//     No partial close at TP1, no break-even move. (Funded-Pro style
+//     in the original V8 vocabulary.) The flags InpPartialClosePct and
+//     InpMoveSLToBEOnTP1 are kept for flexibility but default off.
+//   • Daily lockout fires on TP1 hit ("1 trade a day after 1:1") —
+//     1:1 is observed as a price level only; the live position keeps
+//     running with its original SL/TP toward its binary exit. So the
+//     trade can still close at SL after the day was already locked.
 //   • Daily lockout flag persists across MT5 restarts via MQL5\Files\
 //
 // 3-step system gate (unchanged from V8 Public):
@@ -61,8 +65,8 @@ input group                "=== TP / Risk Management ==="
 input ENUM_LOT_MODE        InpLotMode            = LOT_RISK_PERCENT; // Lot sizing mode
 input double               InpFixedLot           = 0.01;     // Fixed lot (LOT_FIXED only)
 input double               InpRiskPercent        = 1.0;      // Risk % of equity per trade
-input double               InpPartialClosePct    = 50.0;     // % to close at TP1 (0 = BE-only, no partial)
-input bool                 InpMoveSLToBEOnTP1    = true;     // Move SL to entry when TP1 is hit
+input double               InpPartialClosePct    = 0.0;      // % to close at TP1 (0 = no partial — binary trade)
+input bool                 InpMoveSLToBEOnTP1    = false;    // Move SL to entry when TP1 is hit (off = pure binary)
 
 input group                "=== Filters ==="
 input double               InpMaxSpreadPips      = 0.0;      // Max spread to allow new entries (0 = off)
