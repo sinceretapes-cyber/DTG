@@ -5,9 +5,25 @@ indicator("DTG Key Levels", overlay=true, max_lines_count=500, max_boxes_count=5
 // Inputs (DEFAULTS hard-coded to your screenshot values)
 //──────────────────────────────────────────────────────────────────────────────
 levelsEachSide = input.int(10, "Levels above/below price", minval=1, maxval=200)   // default: 10
-step           = input.int(25, "Level spacing", options=[25, 50, 100])             // default: 25
 
-zoneSize       = input.float(2.0, "Zone size (price units, ± around level)", minval=0.0)  // default: 2
+// ── Spacing: Manual vs. Auto ───────────────────────────────────────────────
+// Manual uses the value below verbatim (back-compatible: defaults to 25).
+// Auto looks up the symbol in the override list first; if no match, it falls
+// back to a price-magnitude heuristic so the grid lands on "nice" round
+// numbers for any instrument without hand-tuning.
+spacingMode    = input.string("Manual", "Spacing mode", options=["Manual", "Auto"], tooltip="Manual: use 'Manual spacing' below. Auto: per-symbol overrides → 0.5%-of-price heuristic fallback.")
+manualStep     = input.int(25, "Manual spacing", options=[25, 50, 100])            // default: 25 (used when Spacing mode = Manual)
+overrideList   = input.string("ES=25, NQ=50, MES=25, MNQ=50, YM=25, RTY=5, CL=0.25, GC=5, SI=0.5, NG=0.05, ZB=1, ZN=0.5, BTC=500, ETH=25, SPY=1, QQQ=1, AAPL=1, EURUSD=0.005",
+     "Auto: per-symbol overrides", tooltip="Comma-separated TICKER=STEP pairs. Matched against syminfo.root first (futures), then syminfo.ticker. Used only when Spacing mode = Auto.")
+
+// ── Zone size: Manual vs. Auto ────────────────────────────────────────────
+// Auto scales the zone half-width with the effective spacing, so the zones
+// stay visually proportional on instruments that aren't 25-point-spaced
+// (e.g. CL at 0.25, FX at 0.005). Manual keeps the original price-unit
+// behaviour for back-compat.
+zoneMode       = input.string("Manual", "Zone size mode", options=["Manual", "Auto"], tooltip="Manual: zone is ±(value below) in price units. Auto: zone half-width = (fraction below) × effective spacing.")
+manualZoneSize = input.float(2.0, "Manual zone size (± around level)", minval=0.0)  // default: 2 (used when Zone size mode = Manual)
+autoZoneFrac   = input.float(0.1, "Auto zone fraction of step", minval=0.0, maxval=0.5)  // default: 0.1 (used when Zone size mode = Auto)
 showZones      = input.bool(true, "Show zone rectangles")                                 // default: true
 
 lineColor      = input.color(color.new(color.gray, 0), "Base line color")
@@ -53,6 +69,46 @@ toTicks(v) =>
 ticksFor(v) =>
     math.round(v / syminfo.mintick)
 
+// Returns the step value matched against `ticker` in a "T1=S1, T2=S2, ..."
+// list, or na if no match. Case-insensitive; tolerates surrounding spaces.
+// First match wins.
+parseOverride(ticker, list) =>
+    matched = 0.0
+    found   = false
+    cleaned = str.replace_all(list, " ", "")
+    parts   = str.split(cleaned, ",")
+    sz = na(parts) ? 0 : array.size(parts)
+    if sz > 0
+        for i = 0 to sz - 1
+            entry = array.get(parts, i)
+            kv    = str.split(entry, "=")
+            if not na(kv) and array.size(kv) == 2 and not found
+                k = str.upper(array.get(kv, 0))
+                v = array.get(kv, 1)
+                if k == str.upper(ticker)
+                    parsed = str.tonumber(v)
+                    if not na(parsed)
+                        matched := parsed
+                        found   := true
+    found ? matched : na
+
+// Heuristic fallback for Auto mode when the symbol isn't in the override
+// list: target roughly 0.5% of price, then snap to the nearest "nice"
+// round-number value. Keeps grids sensible across futures, equities, FX
+// and crypto without per-symbol tuning.
+niceStep(price) =>
+    target = math.abs(price) * 0.005
+    nice = array.from(0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0)
+    best     = array.get(nice, 0)
+    bestDiff = math.abs(target - best)
+    for i = 1 to array.size(nice) - 1
+        v = array.get(nice, i)
+        d = math.abs(target - v)
+        if d < bestDiff
+            best := v
+            bestDiff := d
+    best
+
 //──────────────────────────────────────────────────────────────────────────────
 // Persistent objects
 //──────────────────────────────────────────────────────────────────────────────
@@ -66,11 +122,41 @@ total = 2 * levelsEachSide + 1
 var int leftT  = timestamp(leftYear,  1, 1, 0, 0)
 var int rightT = timestamp(rightYear, 1, 1, 0, 0)
 
+// Effective spacing + tier thresholds + zone size, resolved once on the first
+// bar so the grid is stable across the chart instead of re-snapping bar-to-bar.
+// In Manual mode the tier thresholds stay at the original absolute values
+// (25/50/100/500 price units) for back-compat. In Auto mode they scale with
+// the effective step (1×/2×/4×/20×) so the visual hierarchy is preserved on
+// any instrument: e.g. step=0.25 → tiers at 0.25/0.5/1/5; step=50 → 50/100/200/1000.
+var float step     = na
+var float tier25   = na
+var float tier50   = na
+var float tier100  = na
+var float tier500  = na
+var float zoneSize = na
+
 var line[]  Ls = array.new_line()
 var box[]   Bs = array.new_box()
 var label[] Ts = array.new_label()
 
 if barstate.isfirst
+    if spacingMode == "Auto"
+        ov = parseOverride(syminfo.root, overrideList)
+        if na(ov)
+            ov := parseOverride(syminfo.ticker, overrideList)
+        step    := not na(ov) ? ov : niceStep(close)
+        tier25  := step
+        tier50  := step * 2
+        tier100 := step * 4
+        tier500 := step * 20
+    else
+        step    := manualStep * 1.0  // int → float promotion
+        tier25  := 25.0
+        tier50  := 50.0
+        tier100 := 100.0
+        tier500 := 500.0
+    zoneSize := zoneMode == "Auto" ? step * autoZoneFrac : manualZoneSize
+
     for _ = 0 to total - 1
         // Time-based line spanning the full chart so extend.both is belt-and-suspenders
         // rather than the only thing making the line visible.
@@ -95,10 +181,10 @@ if barstate.isfirst
 //──────────────────────────────────────────────────────────────────────────────
 anchor = roundToStep(close, step)
 
-t25  = ticksFor(25.0)
-t50  = ticksFor(50.0)
-t100 = ticksFor(100.0)
-t500 = ticksFor(500.0)
+t25  = ticksFor(tier25)
+t50  = ticksFor(tier50)
+t100 = ticksFor(tier100)
+t500 = ticksFor(tier500)
 
 for idx = 0 to total - 1
     offset   = idx - levelsEachSide
@@ -109,9 +195,14 @@ for idx = 0 to total - 1
     is100 = show100 and (t100 > 0) and (lvlTicks % t100 == 0)
     is50  = show50  and (t50  > 0) and (lvlTicks % t50  == 0) and not is100
 
-    // NEW: “25 levels” here means quarter levels that are NOT 50/100/500,
-    // i.e., xx25 and xx75 when spacing is 25.
-    is25  = show25 and (step == 25) and (t25 > 0) and (lvlTicks % t25 == 0) and not is50 and not is100 and not is500
+    // "25 tier" = grid levels that land on the 25-tier multiple but NOT on a
+    // higher tier. With Manual mode this is exactly the original behaviour
+    // (xx25 / xx75 levels when spacing is 25; no-op when spacing is 50/100,
+    // since no level lands on a 25-multiple between 50-multiples). With Auto
+    // mode tier25 == step, so this fires for every grid level that isn't
+    // already promoted to 50/100/500 — i.e. the quarter levels of the chosen
+    // instrument's effective spacing.
+    is25  = show25 and (t25 > 0) and (lvlTicks % t25 == 0) and not is50 and not is100 and not is500
 
     // Zone color priority: 500 > 100 > 50 > 25 > base
     zCol = is500 ? col500 :
@@ -146,11 +237,13 @@ for idx = 0 to total - 1
     box.set_bgcolor(bx, bFill)
     box.set_border_color(bx, bBord)
 
-    // Text labels:
-    // - If spacing == 25 → label ALL levels (includes 25-level labels)
-    // - If spacing != 25 → label only highlighted levels (50/100/500)
+    // Text labels: label any level that fires a tier. On a 25-grid (Manual
+    // step=25, or Auto where step is the 25-tier) every level is at least an
+    // is25, so all levels get labelled — matching the original behaviour.
+    // On coarser grids (Manual step=50/100) is25 never fires; only the
+    // highlighted tiers get text, also matching the original behaviour.
     lb = array.get(Ts, idx)
-    wantText = showText and ((step == 25) or is500 or is100 or is50)
+    wantText = showText and (is25 or is50 or is100 or is500)
 
     label.set_x(lb, bar_index + textXOffset)
     label.set_y(lb, lvl)
