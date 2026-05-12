@@ -11,17 +11,17 @@ levelsEachSide = input.int(10, "Levels above/below price", minval=1, maxval=200)
 // Auto looks up the symbol in the override list first; if no match, it falls
 // back to a price-magnitude heuristic so the grid lands on "nice" round
 // numbers for any instrument without hand-tuning.
-spacingMode    = input.string("Manual", "Spacing mode", options=["Manual", "Auto"], tooltip="Manual: use 'Manual spacing' below. Auto: per-symbol overrides → 0.5%-of-price heuristic fallback.")
+spacingMode    = input.string("Auto", "Spacing mode", options=["Auto", "Manual"], tooltip="Auto (default): per-symbol overrides → 0.5%-of-price heuristic fallback. Manual: use 'Manual spacing' below.")
 manualStep     = input.int(25, "Manual spacing", options=[25, 50, 100])            // default: 25 (used when Spacing mode = Manual)
-overrideList   = input.string("ES=25, NQ=50, MES=25, MNQ=50, YM=25, RTY=5, CL=0.25, GC=5, SI=0.5, NG=0.05, ZB=1, ZN=0.5, BTC=500, ETH=25, SPY=1, QQQ=1, AAPL=1, EURUSD=0.005",
-     "Auto: per-symbol overrides", tooltip="Comma-separated TICKER=STEP pairs. Matched against syminfo.root first (futures), then syminfo.ticker. Used only when Spacing mode = Auto.")
+overrideList   = input.string("ES=25, MES=25, NQ=50, MNQ=50, YM=25, MYM=25, RTY=5, CL=0.25, MCL=0.25, NG=0.05, GC=5, MGC=5, SI=0.5, MSI=0.5, ZB=1, ZN=0.5, BTC=500, BTCUSD=500, BTCUSDT=500, ETH=25, ETHUSD=25, ETHUSDT=25, XAGUSD=0.5, XAUUSD=5, XPTUSD=5, XPDUSD=5, EURUSD=0.005, GBPUSD=0.005, AUDUSD=0.005, NZDUSD=0.005, USDCAD=0.005, USDCHF=0.005, USDJPY=0.5, EURJPY=0.5, GBPJPY=0.5, AUDJPY=0.5, SPY=1, QQQ=1, IWM=0.5, DIA=1, AAPL=1, MSFT=1, NVDA=1, TSLA=1, GOOG=2, META=2, AMZN=1",
+     "Auto: per-symbol overrides", tooltip="Comma-separated TICKER=STEP pairs. Matched against syminfo.root first (futures), then syminfo.ticker (spot/equity/FX/crypto). First match wins; case-insensitive; spaces tolerated. Used only when Spacing mode = Auto.")
 
 // ── Zone size: Manual vs. Auto ────────────────────────────────────────────
 // Auto scales the zone half-width with the effective spacing, so the zones
 // stay visually proportional on instruments that aren't 25-point-spaced
 // (e.g. CL at 0.25, FX at 0.005). Manual keeps the original price-unit
 // behaviour for back-compat.
-zoneMode       = input.string("Manual", "Zone size mode", options=["Manual", "Auto"], tooltip="Manual: zone is ±(value below) in price units. Auto: zone half-width = (fraction below) × effective spacing.")
+zoneMode       = input.string("Auto", "Zone size mode", options=["Auto", "Manual"], tooltip="Auto (default): zone half-width = (fraction below) × effective spacing — keeps zones proportional on every instrument. Manual: zone is ±(value below) in price units.")
 manualZoneSize = input.float(2.0, "Manual zone size (± around level)", minval=0.0)  // default: 2 (used when Zone size mode = Manual)
 autoZoneFrac   = input.float(0.1, "Auto zone fraction of step", minval=0.0, maxval=0.5)  // default: 0.1 (used when Zone size mode = Auto)
 showZones      = input.bool(true, "Show zone rectangles")                                 // default: true
