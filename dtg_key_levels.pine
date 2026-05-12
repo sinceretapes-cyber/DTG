@@ -48,6 +48,8 @@ col500         = input.color(color.new(color.orange, 80), "500-level zone fill")
 
 // Text labels (DEFAULTS to match screenshot)
 showText       = input.bool(true, "Show text on highlighted levels")
+labelFormat    = input.string("Auto", "Label format", options=["Auto", "Full price", "Compact (k / M)"],
+     tooltip="Auto: full price below 10,000; 'X.XXk' between 10,000 and 1,000,000; 'X.XXM' above. Full: raw price (original behaviour). Compact: always use k/M suffix above 1,000. Decimal precision in every mode is derived from the effective spacing.")
 textColor      = input.color(color.yellow, "Text colour")
 textXOffset    = input.int(30, "Text X offset (bars to the right)", minval=0, maxval=500)  // default: 30
 textSizeOpt    = input.string("Small", "Text size", options=["Tiny","Small","Normal","Large"])
@@ -108,6 +110,59 @@ niceStep(price) =>
             best := v
             bestDiff := d
     best
+
+// Number of decimal places required to render `s` exactly. Used to pick a
+// "just enough" precision for label formatting:
+//   step=25 → 0,  step=0.5 → 1,  step=0.25 → 2,  step=0.005 → 3,  step=0.0001 → 4.
+// Multiplies by 10 until the value is (approximately) an integer; the small
+// tolerance absorbs the float drift you get from chained multiplications.
+decimalsForStep(s) =>
+    d = 0
+    v = math.abs(s)
+    for i = 0 to 10
+        if math.abs(v - math.round(v)) < 1e-9 or d >= 8
+            break
+        v := v * 10
+        d := d + 1
+    d
+
+// Convert a decimal count into a Pine format string. `#` is "optional digit"
+// so trailing zeros are dropped, e.g. 30.0 → "30", 30.50 → "30.5".
+decimalsToFmt(d) =>
+    d <= 0 ? "#" :
+     d == 1 ? "#.#" :
+     d == 2 ? "#.##" :
+     d == 3 ? "#.###" :
+     d == 4 ? "#.####" :
+     d == 5 ? "#.#####" :
+     d == 6 ? "#.######" :
+     d == 7 ? "#.#######" : "#.########"
+
+// Render a price level for display next to a grid line.
+//   mode = "Full price"     : raw str.tostring (original behaviour).
+//   mode = "Compact (k / M)": k-suffix above 1 000, M-suffix above 1 000 000.
+//   mode = "Auto" (default) : full below 10 000, k between 10 000 and 1 000 000,
+//                             M above 1 000 000. Decimal precision in every
+//                             branch is derived from the effective step so
+//                             the label always has just enough digits to
+//                             distinguish adjacent levels.
+formatLevel(value, stepRef, mode) =>
+    av = math.abs(value)
+    useM = (mode == "Compact (k / M)" or mode == "Auto") and av >= 1000000.0
+    useK = not useM and ((mode == "Compact (k / M)" and av >= 1000.0) or (mode == "Auto" and av >= 10000.0))
+    result = ""
+    if useM
+        kd = math.min(decimalsForStep(stepRef / 1000000.0), 3)
+        result := str.tostring(value / 1000000.0, decimalsToFmt(kd)) + "M"
+    else if useK
+        kd = math.min(decimalsForStep(stepRef / 1000.0), 3)
+        result := str.tostring(value / 1000.0, decimalsToFmt(kd)) + "k"
+    else if mode == "Full price"
+        result := str.tostring(value)
+    else
+        d = math.min(decimalsForStep(stepRef), 8)
+        result := str.tostring(value, decimalsToFmt(d))
+    result
 
 //──────────────────────────────────────────────────────────────────────────────
 // Persistent objects
@@ -255,4 +310,4 @@ for idx = 0 to total - 1
     label.set_textcolor(lb, textColor)
     label.set_color(lb, color.new(color.black, 100))  // invisible background
 
-    label.set_text(lb, wantText ? str.tostring(lvl) : "")
+    label.set_text(lb, wantText ? formatLevel(lvl, step, labelFormat) : "")
