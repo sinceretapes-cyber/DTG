@@ -11,10 +11,10 @@ levelsEachSide = input.int(10, "Levels above/below price", minval=1, maxval=200)
 // Auto looks up the symbol in the override list first; if no match, it falls
 // back to a price-magnitude heuristic so the grid lands on "nice" round
 // numbers for any instrument without hand-tuning.
-spacingMode    = input.string("Auto", "Spacing mode", options=["Auto", "Manual"], tooltip="Auto (default): per-symbol overrides → 0.5%-of-price heuristic fallback. Manual: use 'Manual spacing' below.")
+spacingMode    = input.string("Auto", "Spacing mode", options=["Auto", "Manual"], tooltip="Auto (default): produce 25/50/75/00 quarter-level grids on every instrument. Looks up the symbol in the override list first; falls back to a 0.25 × 10^N heuristic snapped to ≈ 0.5% of price. Manual: use 'Manual spacing' below.")
 manualStep     = input.int(25, "Manual spacing", options=[25, 50, 100])            // default: 25 (used when Spacing mode = Manual)
-overrideList   = input.string("ES=25, MES=25, NQ=50, MNQ=50, YM=25, MYM=25, RTY=5, CL=0.25, MCL=0.25, NG=0.05, GC=5, MGC=5, SI=0.5, MSI=0.5, ZB=1, ZN=0.5, BTC=500, BTCUSD=500, BTCUSDT=500, ETH=25, ETHUSD=25, ETHUSDT=25, XAGUSD=0.5, XAUUSD=5, XPTUSD=5, XPDUSD=5, EURUSD=0.005, GBPUSD=0.005, AUDUSD=0.005, NZDUSD=0.005, USDCAD=0.005, USDCHF=0.005, USDJPY=0.5, EURJPY=0.5, GBPJPY=0.5, AUDJPY=0.5, SPY=1, QQQ=1, IWM=0.5, DIA=1, AAPL=1, MSFT=1, NVDA=1, TSLA=1, GOOG=2, META=2, AMZN=1",
-     "Auto: per-symbol overrides", tooltip="Comma-separated TICKER=STEP pairs. Matched against syminfo.root first (futures), then syminfo.ticker (spot/equity/FX/crypto). First match wins; case-insensitive; spaces tolerated. Used only when Spacing mode = Auto.")
+overrideList   = input.string("ES=25, MES=25, NQ=25, MNQ=25, YM=25, MYM=25, RTY=2.5, CL=0.25, MCL=0.25, NG=0.025, GC=2.5, MGC=2.5, SI=0.25, MSI=0.25, ZB=0.25, ZN=0.25, BTC=250, BTCUSD=250, BTCUSDT=250, ETH=25, ETHUSD=25, ETHUSDT=25, XAGUSD=0.25, XAUUSD=2.5, XPTUSD=2.5, XPDUSD=2.5, EURUSD=0.0025, GBPUSD=0.0025, AUDUSD=0.0025, NZDUSD=0.0025, USDCAD=0.0025, USDCHF=0.0025, USDJPY=0.25, EURJPY=0.25, GBPJPY=0.25, AUDJPY=0.25, SPY=2.5, QQQ=2.5, IWM=0.25, DIA=0.25, AAPL=0.25, MSFT=0.25, NVDA=0.25, TSLA=0.25, GOOG=0.25, META=2.5, AMZN=0.25",
+     "Auto: per-symbol overrides", tooltip="Comma-separated TICKER=STEP pairs that produce 25/50/75/00 quarter-level grids on each instrument. Every step value is from the 0.25 × 10^N family so adjacent levels always read as a quarter pattern (e.g. silver step 0.25 → 84.000 / 84.250 / 84.500 / 84.750; ES step 25 → 5000 / 5025 / 5050 / 5075; BTC step 250 → 70000 / 70250 / 70500 / 70750). Matched against syminfo.root first (futures), then syminfo.ticker (spot/equity/FX/crypto). First match wins; case-insensitive; spaces tolerated. Used only when Spacing mode = Auto.")
 
 // ── Zone size: Manual vs. Auto ────────────────────────────────────────────
 // Auto scales the zone half-width with the effective spacing, so the zones
@@ -95,21 +95,27 @@ parseOverride(ticker, list) =>
     found ? matched : na
 
 // Heuristic fallback for Auto mode when the symbol isn't in the override
-// list: target roughly 0.5% of price, then snap to the nearest "nice"
-// round-number value. Keeps grids sensible across futures, equities, FX
-// and crypto without per-symbol tuning.
-niceStep(price) =>
-    target = math.abs(price) * 0.005
-    nice = array.from(0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0)
-    best     = array.get(nice, 0)
-    bestDiff = math.abs(target - best)
-    for i = 1 to array.size(nice) - 1
-        v = array.get(nice, i)
-        d = math.abs(target - v)
-        if d < bestDiff
-            best := v
-            bestDiff := d
-    best
+// list. Always returns a step from the "quarter" family — i.e.
+// step = 0.25 × 10^N for some integer N — so the grid lines always read
+// as the 25 / 50 / 75 / 00 pattern in their natural decimal place,
+// matching the original ES (5000 / 5025 / 5050 / 5075) behaviour at every
+// price scale:
+//   silver  $84      → step 0.25     → 84.000, 84.250, 84.500, 84.750, 85.000
+//   ES      $5 000   → step 25       → 4975, 5000, 5025, 5050, 5075
+//   NQ      $22 000  → step 25       → 21975, 22000, 22025, 22050, 22075
+//   gold    $2 400   → step 2.5      → 2400.0, 2402.5, 2405.0, 2407.5, 2410.0
+//   BTC     $70 000  → step 250      → 69750, 70000, 70250, 70500, 70750
+//   EURUSD  1.10     → step 0.0025   → 1.0975, 1.1000, 1.1025, 1.1050
+//   USDJPY  150      → step 0.25     → 149.75, 150.00, 150.25, 150.50
+//
+// Density target: step ≈ 0.5% of price (so 21 levels span ≈ 10% of price).
+// N is the largest integer such that 0.25 × 10^N ≤ 0.5% × price, i.e.
+//   N = floor( log10( 0.02 × price ) )
+// because 0.5% / 0.25 = 0.02. Snaps down to the nearest quarter step so the
+// grid is never finer than the conventional density on each instrument.
+quarterStep(price) =>
+    av = math.abs(price)
+    av < 1e-12 ? 0.25 : 0.25 * math.pow(10, math.floor(math.log10(0.02 * av)))
 
 // Number of decimal places required to render `s` exactly. Used to pick a
 // "just enough" precision for label formatting:
@@ -199,7 +205,7 @@ if barstate.isfirst
         ov = parseOverride(syminfo.root, overrideList)
         if na(ov)
             ov := parseOverride(syminfo.ticker, overrideList)
-        step    := not na(ov) ? ov : niceStep(close)
+        step    := not na(ov) ? ov : quarterStep(close)
         tier25  := step
         tier50  := step * 2
         tier100 := step * 4
