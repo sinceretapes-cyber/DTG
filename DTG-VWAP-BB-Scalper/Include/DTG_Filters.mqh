@@ -206,6 +206,12 @@ struct DTGFilterReadings
    double  ema_dev_pct;
   };
 
+// Session / day-of-week state for one-shot transition announcements.
+// We don't want to spam the journal with per-tick rejection lines for these
+// two filters since they fire constantly outside trading hours.
+bool g_was_in_session = false;
+bool g_was_dow_ok     = true;
+
 bool DTG_Filters_PassEntry(const datetime utc_now,
                            DTGFilterReadings &r,
                            string &fail_reason)
@@ -213,10 +219,32 @@ bool DTG_Filters_PassEntry(const datetime utc_now,
    ZeroMemory(r);
 
    string why;
-   if(!DTG_Filter_InSession(utc_now, why))
-     { DTG_LogReject("SESSION", why); fail_reason = why; return false; }
-   if(!DTG_Filter_DayOfWeekOk(utc_now, why))
-     { DTG_LogReject("DOW", why);     fail_reason = why; return false; }
+   bool in_session = DTG_Filter_InSession(utc_now, why);
+   if(in_session != g_was_in_session)
+     {
+      if(in_session) DTG_LOG_I("SESSION", "Asian session window OPEN");
+      else            DTG_LOG_I("SESSION", "Asian session window CLOSED");
+      g_was_in_session = in_session;
+     }
+   if(!in_session)
+     {
+      g_log_stats.rej_session++;
+      fail_reason = why;
+      return false;
+     }
+
+   bool dow_ok = DTG_Filter_DayOfWeekOk(utc_now, why);
+   if(dow_ok != g_was_dow_ok)
+     {
+      if(!dow_ok) DTG_LOG_I("DOW", "Day-of-week guard active: " + why);
+      g_was_dow_ok = dow_ok;
+     }
+   if(!dow_ok)
+     {
+      g_log_stats.rej_dayofweek++;
+      fail_reason = why;
+      return false;
+     }
    if(!DTG_Filter_Spread(why, r.spread_pts))
      { DTG_LogReject("SPREAD", why);  fail_reason = why; return false; }
    if(DTG_News_BlockTrades(utc_now, why))
