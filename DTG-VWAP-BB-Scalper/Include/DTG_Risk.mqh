@@ -44,7 +44,7 @@ datetime DTG_StartOfWeekUtc(const datetime t_utc)
 //+------------------------------------------------------------------+
 void DTG_Risk_SavePF()
   {
-   int h = FileOpen(DTG_PERSIST_FILE, FILE_WRITE | FILE_BIN | FILE_COMMON_OFF);
+   int h = FileOpen(DTG_PERSIST_FILE, FILE_WRITE | FILE_BIN);
    if(h == INVALID_HANDLE)
      {
       DTG_LOG_W("RISK", StringFormat("Save PF state failed err=%d", GetLastError()));
@@ -69,7 +69,7 @@ void DTG_Risk_LoadPF()
 
    if(!FileIsExist(DTG_PERSIST_FILE))
       return;
-   int h = FileOpen(DTG_PERSIST_FILE, FILE_READ | FILE_BIN | FILE_COMMON_OFF);
+   int h = FileOpen(DTG_PERSIST_FILE, FILE_READ | FILE_BIN);
    if(h == INVALID_HANDLE)
       return;
    int sz = FileReadInteger(h, INT_VALUE);

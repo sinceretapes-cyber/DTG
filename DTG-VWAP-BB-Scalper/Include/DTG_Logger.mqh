@@ -158,7 +158,7 @@ bool DTG_WriteDailySummary(const datetime day_utc,
    TimeToStruct(day_utc, mdt);
    string fname = StringFormat("DTG_VWAP_BB_%04d%02d%02d.log",
                                mdt.year, mdt.mon, mdt.day);
-   int h = FileOpen(fname, FILE_WRITE | FILE_TXT | FILE_ANSI | FILE_COMMON_OFF);
+   int h = FileOpen(fname, FILE_WRITE | FILE_TXT | FILE_ANSI);
    if(h == INVALID_HANDLE)
      {
       DTG_LOG_W("LOG", StringFormat("Could not open %s err=%d", fname, GetLastError()));
