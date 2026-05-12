@@ -11,7 +11,7 @@
 //+------------------------------------------------------------------+
 #property copyright "DTG — Day Trading Gold"
 #property link      "https://daytradinggold.local"
-#property version   "0.10"
+#property version   "1.00"
 #property strict
 #property description "Asian-session VWAP-BB mean reversion scalper for XAUUSD."
 
