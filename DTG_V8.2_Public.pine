@@ -2,7 +2,7 @@
 indicator("DTG V8.2", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500, dynamic_requests=true)
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
-// ║  DTG ENGINE — Public Release · build signal-hardprint                    ║
+// ║  DTG ENGINE — Public Release · build bar-open-lock                       ║
 // ║  Single Entry Model (EM1) · Multi-TF bias · Auto-discount zones          ║
 // ║  3-Step System: Bias → Zone Touch → Signal                               ║
 // ║  Single unified alert() — covers Signal · Triggered · Invalid in one     ║
@@ -140,8 +140,28 @@ bgcolor(tradingWindow and mergedTW ? TW_color : na)
 
 ema8       = ta.ema(close, 8)
 ema20      = ta.ema(close, 20)
-trend_avg  = (ema8 + ema20) / 2
-pct_change = 100 * (ema8 - ema20) / trend_avg
+// pct_change uses the PREVIOUS bar's EMA values, not the live forming
+// bar's. This locks the EMA divergence reading at the moment the new
+// candle opens — so once the candle begins, pct_change cannot change
+// regardless of how price ticks within the bar. Eliminates the
+// 'signal appears mid-bar then disappears' flicker that happened when
+// the live ema8/ema20 spread bounced across the 0.006 threshold during
+// the developing candle.
+//
+// Behaviour for the trader:
+//   • At bar OPEN — pct_change is fixed (= prior bar's EMA divergence).
+//     Combined with pattern conditions (close[1..3], also closed bars)
+//     this means the signal label either prints on the very first tick
+//     of the candle and stays for the whole bar, or never appears.
+//   • During the bar — no recalculation, no flicker, no flash-in-flash-out.
+//   • At bar close — signal is whatever it was at open (locked).
+//
+// Trade-off: historical signals shift slightly because the EMA reading
+// is one bar earlier than the original code. Backtest may show fewer/
+// different signals on borderline-threshold setups. Pattern logic and
+// bias / zone gates are unchanged so most signals are unaffected.
+trend_avg  = (ema8[1] + ema20[1]) / 2
+pct_change = 100 * (ema8[1] - ema20[1]) / trend_avg
 
 spread_tick = syminfo.mintick * (XAU ? 100 : (XAG ? 1000 : (FX ? 10 : 0)))
 digits      = int(math.log10(1 / syminfo.mintick) - 1)
@@ -591,15 +611,8 @@ bool em1_stepTwoValid = requireZoneTap ? (stepTwoMet and stepTwoBias == overallB
 bool em1_systemReady  = em1_stepTwoValid and (not oneTradePerDay or not dailyProfitTaken)
 bool em1_allowed      = trade.status != "Triggered" and em1_systemReady
 
-// Signal HARDPRINT: 'barstate.isconfirmed' restricts validBuy/validSell to
-// bar close only. Eliminates mid-bar flicker (the ema-based pct_change
-// ticks live during the bar; near the 0.006 threshold it can cross back
-// and forth and flash the signal label on/off). Historical bars are
-// unaffected because Pine evaluates them at bar close anyway. Trade state
-// machine, intrabar 1m scan and same-bar trigger logic all still work
-// because they run in the same close-of-bar script evaluation.
-bool validBuy  = buySignal and enableEM1 and em1_allowed and showLabel != "Off" and barstate.isconfirmed
-bool validSell = sellSignal and enableEM1 and em1_allowed and showLabel != "Off" and barstate.isconfirmed
+bool validBuy  = buySignal and enableEM1 and em1_allowed and showLabel != "Off"
+bool validSell = sellSignal and enableEM1 and em1_allowed and showLabel != "Off"
 
 if validBuy
     trade.bar        := bar_index
