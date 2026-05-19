@@ -2,7 +2,7 @@
 indicator("DTG V8.2", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500, dynamic_requests=true)
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
-// ║  DTG ENGINE — Public Release · build bar-open-lock                       ║
+// ║  DTG ENGINE — Public Release · build after-hours-preset                  ║
 // ║  Single Entry Model (EM1) · Multi-TF bias · Auto-discount zones          ║
 // ║  3-Step System: Bias → Zone Touch → Signal                               ║
 // ║  Single unified alert() — covers Signal · Triggered · Invalid in one     ║
@@ -30,18 +30,28 @@ const bool showBiasCountdown = true
 // one named mode. Presets are a clearer, less-error-prone way for members
 // to switch between trading philosophies than 5 separate checkboxes.
 //
-//   V8 Pro      — original strict gating with TP1→BE trail
-//   Funded Pro  — strict gating, NO TP1, NO BE move; binary Entry→TP2 or
-//                 Entry→SL exits. Matches funded-account preferences.
-//   V8 Unlocked — every system filter off; raw pattern fires. NOT recommended
-//                 for live trading — see warning rendered on chart when active.
+//   V8 Pro       — original strict gating with TP1→BE trail
+//   After Hours  — V8 Pro logic but trading-window restriction removed;
+//                  signals fire any time of day when bias + zone + pattern
+//                  align. Everything else (zone tap required, one trade
+//                  per day, TP1→BE trail) identical to V8 Pro.
+//   Funded Pro   — strict gating, NO TP1, NO BE move; binary Entry→TP2 or
+//                  Entry→SL exits. Matches funded-account preferences.
+//   V8 Unlocked  — every system filter off; raw pattern fires. NOT
+//                  recommended for live trading — see warning banner.
 grpSystem       = "System Preset"
-preset          = input.string("V8 Pro", "Mode", options=["V8 Pro", "Funded Pro", "V8 Unlocked"], group=grpSystem, tooltip="V8 Pro — original strict 3-step system with TP1→BE trail (recommended default).\n\nFunded Pro — strict gating, but trade is binary: Entry hits TP2 (Win) or SL (Loss). No TP1, no break-even move. Matches funded-account requirements.\n\n⚠ V8 Unlocked — every system filter off. Fires on raw EM1 pattern + bias only. Expect significantly more signals but unverified win rate. Use at your own risk — NOT recommended for live trading.")
+preset          = input.string("V8 Pro", "Mode", options=["V8 Pro", "After Hours", "Funded Pro", "V8 Unlocked"], group=grpSystem, tooltip="V8 Pro — original strict 3-step system with TP1→BE trail (recommended default).\n\nAfter Hours — same as V8 Pro but the trading-window restriction is removed. Signals fire any time of day as long as Bias, Discount Zone tap and EM1 pattern align. Zone tap and one-trade-per-day rules still apply; TP1→BE trail still active. Use when you want V8 signals outside the standard window.\n\nFunded Pro — strict gating, but trade is binary: Entry hits TP2 (Win) or SL (Loss). No TP1, no break-even move. Matches funded-account requirements.\n\n⚠ V8 Unlocked — every system filter off. Fires on raw EM1 pattern + bias only. Expect significantly more signals but unverified win rate. Use at your own risk — NOT recommended for live trading.")
 
 // Derive the four legacy rule booleans from the preset choice. Downstream
 // code keeps reading these names so nothing else changes.
-bool excludeNonTW   = preset != "V8 Unlocked"
-bool windowTapsOnly = preset != "V8 Unlocked"
+//
+// Window restriction — disabled for both V8 Unlocked AND After Hours.
+//   • V8 Unlocked: all filters off including window
+//   • After Hours: window-only filters off, other gates remain
+bool excludeNonTW   = preset != "V8 Unlocked" and preset != "After Hours"
+bool windowTapsOnly = preset != "V8 Unlocked" and preset != "After Hours"
+// One-trade-per-day and zone-tap requirement stay on for After Hours
+// (matches the V8 Pro intent — only window is relaxed).
 bool oneTradePerDay = preset != "V8 Unlocked"
 bool requireZoneTap = preset != "V8 Unlocked"
 // Funded Pro disables TP1 management entirely — exit is binary (TP2 or SL).
@@ -1139,15 +1149,15 @@ if showTable and barstate.islast
     // Table layout (3 columns × 15 rows):
     //   Row  0    — Title bar (DTG ENGINE · V8.2)
     //   Row  1    — Section header: 3-STEP SYSTEM
-    //   Row  2    — ✓/– Bias       Bullish / Bearish / Neutral
-    //   Row  3    — ✓/– Touched    4H · 6H · 8H · …
-    //   Row  4    — ✓/– Signal     Active / Triggered / Scanning / …
+    //   Row  2    — ✓/– Bias    Bullish / Bearish / Neutral
+    //   Row  3    — ✓/– DZ      4H · 6H · 8H · …            (touched discount zones)
+    //   Row  4    — ✓/– Entry   Active / Triggered / Scanning / …
     //   Row  5    — Section header: STATUS              (only when not in trade)
     //   Row  6    — System         Awaiting / Ready / ✓ Complete / No Bias
     //   Row  7    — Section header: LIVE TRADE          (only when in trade)
     //   Row  8-12 — Entry / SL / TP1 / TP2 / Lots       (TP1 hidden under Funded Pro)
-    //   Row 13    — Section header: BIAS RECALC
-    //   Row 14    — Rescan countdown
+    //   Row 13    — Section header: SYSTEM RESCAN
+    //   Row 14    — Countdown timer (merged, centered, no label)
     var table main_table = table.new(position.top_right, 3, 15, bgcolor=baseBG, border_color=frameBG, border_width=0, frame_color=frameBG, frame_width=1)
 
     // Row 0 — Title bar: DTG ENGINE · V8.2 (merged across all 3 cols, centered)
@@ -1167,12 +1177,12 @@ if showTable and barstate.islast
     discClr = touchZonesStr != "None" ? biasColor : color.new(color.gray, 0)
     discTxtSize = str.length(touchZonesStr) > 12 ? size.tiny : str.length(touchZonesStr) > 5 ? size.small : tblSize
     table.cell(main_table, 0, 3, step2Glyph, text_color=step2Txt, text_size=tblSize, bgcolor=step2Bg, text_halign=text.align_center)
-    table.cell(main_table, 1, 3, "Touched", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+    table.cell(main_table, 1, 3, "DZ", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
     table.cell(main_table, 2, 3, touchZonesStr, text_color=valueTxt, text_size=discTxtSize, bgcolor=color.new(discClr, 30), text_halign=text.align_center)
 
     // Row 4 — Signal step
     table.cell(main_table, 0, 4, step3Glyph, text_color=step3Txt, text_size=tblSize, bgcolor=step3Bg, text_halign=text.align_center)
-    table.cell(main_table, 1, 4, "Signal", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
+    table.cell(main_table, 1, 4, "Entry", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
     table.cell(main_table, 2, 4, trade.status, text_color=valueTxt, text_size=tblSize, bgcolor=color.new(noSignal_Bias, 30), text_halign=text.align_center)
 
     // Section: STATUS (rows 5-6) — visible only when scanning. Header + System row.
@@ -1257,10 +1267,10 @@ if showTable and barstate.islast
     else
         table.clear(main_table, 0, 7, 2, 12)
 
-    // Section: BIAS RECALC (rows 13-14) — header + countdown.
+    // Section: SYSTEM RESCAN (rows 13-14) — header + countdown.
     if showBiasCountdown
         // Row 13 — section header (merged + centered + compact)
-        table.cell(main_table, 0, 13, "BIAS RECALC", text_color=sectionTxt, text_size=size.small, bgcolor=sectionBG, text_halign=text.align_center)
+        table.cell(main_table, 0, 13, "SYSTEM RESCAN", text_color=sectionTxt, text_size=size.small, bgcolor=sectionBG, text_halign=text.align_center)
         table.merge_cells(main_table, 0, 13, 2, 13)
 
         // Row 14 — countdown.
@@ -1292,9 +1302,10 @@ if showTable and barstate.islast
         int ccSs       = ccRem - ccMin * 60
         string ccTxt = ccHr > 0 ? str.tostring(ccHr) + "h " + str.tostring(ccMin) + "m" : str.tostring(ccMin) + ":" + (ccSs < 10 ? "0" : "") + str.tostring(ccSs)
         color  ccBG  = ccHr == 0 and ccMin < 15 ? color.new(#00d4ff, 70) : color.new(#3a4a60, 60)
-        table.cell(main_table, 0, 14, "", bgcolor=baseBG)
-        table.cell(main_table, 1, 14, "Rescan", text_color=labelTxt, text_size=tblSize, bgcolor=baseBG, text_halign=text.align_right)
-        table.cell(main_table, 2, 14, ccTxt,    text_color=valueTxt, text_size=tblSize, bgcolor=ccBG, text_halign=text.align_center)
+        // Row 14 — timer only, no label (label is implied by the section header
+        // 'SYSTEM RESCAN' on row 13). Merged + centered for clean look.
+        table.cell(main_table, 0, 14, ccTxt, text_color=valueTxt, text_size=tblSize, bgcolor=ccBG, text_halign=text.align_center)
+        table.merge_cells(main_table, 0, 14, 2, 14)
     else
         table.clear(main_table, 0, 13, 2, 14)
 
