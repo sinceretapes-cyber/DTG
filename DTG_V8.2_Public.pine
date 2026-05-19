@@ -2,7 +2,7 @@
 indicator("DTG V8.2", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500, dynamic_requests=true)
 
 // ╔═══════════════════════════════════════════════════════════════════════════╗
-// ║  DTG ENGINE — Public Release · build intrabar-order                      ║
+// ║  DTG ENGINE — Public Release · build signal-hardprint                    ║
 // ║  Single Entry Model (EM1) · Multi-TF bias · Auto-discount zones          ║
 // ║  3-Step System: Bias → Zone Touch → Signal                               ║
 // ║  Single unified alert() — covers Signal · Triggered · Invalid in one     ║
@@ -591,8 +591,15 @@ bool em1_stepTwoValid = requireZoneTap ? (stepTwoMet and stepTwoBias == overallB
 bool em1_systemReady  = em1_stepTwoValid and (not oneTradePerDay or not dailyProfitTaken)
 bool em1_allowed      = trade.status != "Triggered" and em1_systemReady
 
-bool validBuy  = buySignal and enableEM1 and em1_allowed and showLabel != "Off"
-bool validSell = sellSignal and enableEM1 and em1_allowed and showLabel != "Off"
+// Signal HARDPRINT: 'barstate.isconfirmed' restricts validBuy/validSell to
+// bar close only. Eliminates mid-bar flicker (the ema-based pct_change
+// ticks live during the bar; near the 0.006 threshold it can cross back
+// and forth and flash the signal label on/off). Historical bars are
+// unaffected because Pine evaluates them at bar close anyway. Trade state
+// machine, intrabar 1m scan and same-bar trigger logic all still work
+// because they run in the same close-of-bar script evaluation.
+bool validBuy  = buySignal and enableEM1 and em1_allowed and showLabel != "Off" and barstate.isconfirmed
+bool validSell = sellSignal and enableEM1 and em1_allowed and showLabel != "Off" and barstate.isconfirmed
 
 if validBuy
     trade.bar        := bar_index
