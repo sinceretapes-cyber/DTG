@@ -1,43 +1,51 @@
 //@version=6
-// DTG Volume Pools — Pine Script v6.2
+// DTG Volume Pools — Pine Script v6.3
 //
-// Eliminates the realtime lag at HTF bucket boundaries by splitting the
-// snapshot from the accumulation. All bucket math stays at the chart level,
-// fed by request.security_lower_tf(sym, "1", ...) which delivers 1-minute
-// data to every chart timeframe ≤ the profile timeframe.
+// Eliminates the realtime lag at HTF bucket boundaries by firing the
+// snapshot on barstate.isconfirmed of the LAST chart bar of the current
+// HTF bucket, rather than on barstate.isconfirmed of the FIRST chart bar
+// of the NEXT HTF bucket (v6.0), or on barstate.isnew of that first bar
+// (v6.2).
 //
-// Changes vs v6.0:
-//   #1  The new-bucket SNAPSHOT (calculating VAH/VAL for the just-closed
-//       HTF bucket) is gated on barstate.isnew + isNewBucket, NOT on
-//       barstate.isconfirmed. By the moment a new HTF bucket opens on the
-//       chart — i.e. the first realtime tick of the first chart bar of
-//       that bucket — the previous bucket's arrays already contain every
-//       confirmed sub-bar of the just-closed window (they were filled on
-//       barstate.isconfirmed of each prior chart bar). Snapshotting at that
-//       instant produces a value-area that is byte-identical to v6.0's
-//       end-of-first-bar snapshot — only the firing moment moves earlier.
-//   #2  Accumulation of the CURRENT chart bar's data into the open bucket
-//       is still gated on barstate.isconfirmed. This preserves v6.0's #1
-//       fix: the in-progress chart bar is captured with final OHLCV and the
-//       fully populated request.security_lower_tf array, never with
-//       open-tick data.
+// Why the v6.2 attempt failed: Pine commits var-variable modifications
+// only on barstate.isconfirmed. Modifications made during intrabar ticks
+// (e.g. inside an `if barstate.isnew` block) are tentative — on every
+// subsequent tick of the same bar, Pine re-runs the script from the var's
+// last committed state. So firing the snapshot on barstate.isnew updated
+// latestClosedVah/Val for one tick, then those values were rolled back to
+// their end-of-prior-bar state for the rest of the bar. The chart's
+// drawing code re-read the rolled-back values on every subsequent tick,
+// so the pool kept showing the old zone until the chart bar finally
+// closed — same symptom as v6.0.
+//
+// Why v6.3 works: the snapshot now fires on the bucket-closing chart
+// bar's barstate.isconfirmed. That IS Pine's commit moment for var
+// variables. By the time the next chart bar opens — which is also the
+// first chart bar of the new HTF bucket — latestClosedVah/Val already
+// hold the just-closed bucket's value-area. The first realtime tick of
+// the new chart bar draws the pool at the correct level.
+//
+// Detection of the bucket-closing chart bar:
+//   time_close == time_close(profileTimeframeString)
+// is true on the chart bar whose own close time coincides with the
+// current HTF bar's close time — i.e. the last chart bar fully contained
+// within the current HTF window. Holds for 4H / 6H / 8H / 12H / Daily /
+// Weekly when the chart timeframe divides evenly into them.
 //
 // Behavioural contract preserved from v6.0:
-//   - Closed-bucket VAH/VAL is byte-identical (same row geometry, same
-//     half-open rows, same value-area expansion order, same tie-break, same
-//     "last accepted" rollback).
-//   - First partial bucket on chart load is not emitted as a profile.
+//   - Closed-bucket VAH/VAL is byte-identical. The snapshot consumes the
+//     same bucket arrays it would have consumed in v6.0 — the bar-1..N
+//     LTF data of the just-closed window — only the firing moment moves
+//     one chart bar earlier.
+//   - Accumulation of the current bar still happens on barstate.isconfirmed
+//     with the fully populated request.security_lower_tf("1") array (v6.0
+//     fix #1 retained).
+//   - First partial bucket on chart load is still not emitted as a
+//     profile (hasFullBucketStarted guard retained).
 //   - Bias logic (six HTF previous-close votes, lookahead_on + [1]) is
 //     unchanged.
-//   - Pool box / midline / debug table appearance and inputs are unchanged.
-//
-// Note on the v6.1 detour: that build tried to drive the math from a 1m
-// request.security() context. The snapshot fires correctly inside that
-// context, but TradingView's realtime feed only surfaces the lower-TF
-// security tuple to the chart on the chart bar's own evaluation cadence,
-// so the chart-side pool still flipped at chart-bar close, not at HTF
-// rollover. v6.2 puts the math back at chart level where barstate.isnew
-// reliably fires on the open tick of every chart bar in realtime.
+//   - Pool box / midline / debug table appearance and inputs are
+//     unchanged.
 indicator("DTG Volume Pools (v6)", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
 
 profileTimeframe = input.string("4H", "Profile Timeframe", options = ["4H", "6H", "8H", "12H", "Daily", "Weekly"])
@@ -285,48 +293,23 @@ else
         timeframeWarning.delete()
         timeframeWarning := na
 
-    // SNAPSHOT: fires on the first realtime tick of the first chart bar of a
-    // new HTF bucket. The bucket arrays at this instant are complete — every
-    // confirmed sub-bar of the just-closed HTF window has already been
-    // appended on the prior chart bar's barstate.isconfirmed pass. The
-    // current chart bar's own data is NOT yet in the arrays, which is
-    // intentional: that data belongs to the new bucket and will be appended
-    // in this same bar's barstate.isconfirmed pass further down.
-    if barstate.isnew and isNewBucket and isInitialized and hasFullBucketStarted and bucketHighs.size() > 0 and not na(bucketLow) and not na(bucketHigh)
-        [snapshotVah, snapshotVal, snapshotRowHeight, snapshotVahRowVolume, snapshotValRowVolume, snapshotTotalVolume] = calculateProfile(bucketLow, bucketHigh, bucketHighs, bucketLows, bucketVolumes)
-        latestClosedVah          := snapshotVah
-        latestClosedVal          := snapshotVal
-        latestClosedRowHeight    := snapshotRowHeight
-        latestClosedVahRowVolume := snapshotVahRowVolume
-        latestClosedValRowVolume := snapshotValRowVolume
-        latestClosedTotalVolume  := snapshotTotalVolume
-        latestClosedRangeLow     := bucketLow
-        latestClosedRangeHigh    := bucketHigh
-        latestClosedBucketTime   := previousBucketTime
-
-        bucketHighs  .clear()
-        bucketLows   .clear()
-        bucketVolumes.clear()
-        bucketHigh         := na
-        bucketLow          := na
-        previousBucketTime := currentBucketTime
-
-    // ACCUMULATE: fires on chart bar close. Captures the bar's final OHLCV
-    // and the fully populated LTF array — same behaviour as v6.0. On a bar
-    // where the snapshot above also ran (the first chart bar of a new HTF
-    // bucket), bucketHigh/bucketLow are na from the snapshot's clear, so the
-    // na-aware update below correctly initialises them from this bar's
-    // high/low rather than carrying old bucket values forward.
+    // All bucket maintenance and the snapshot happen on barstate.isconfirmed,
+    // which is Pine's commit moment for var-variable modifications. This is
+    // the key reason v6.3 actually works in realtime where v6.2 didn't.
     if barstate.isconfirmed
         array<float> currentBarHighs   = canUseLowerTf and ltfHigh  .size() > 0 ? ltfHigh  .copy() : array.from(high)
         array<float> currentBarLows    = canUseLowerTf and ltfLow   .size() > 0 ? ltfLow   .copy() : array.from(low)
         array<float> currentBarVolumes = canUseLowerTf and ltfVolume.size() > 0 ? ltfVolume.copy() : array.from(nz(volume, 0.0))
 
+        // Step 1: accumulate this chart bar's data into the open bucket
+        // (or start a new bucket if isNewBucket fired). This is the same
+        // routing as v6.0, minus the v6.0 snapshot which has moved to
+        // step 2 below.
         if not isInitialized
             previousBucketTime   := currentBucketTime
             isInitialized        := true
             hasFullBucketStarted := false
-        else if isNewBucket and not hasFullBucketStarted
+        else if isNewBucket
             bucketHighs  .clear()
             bucketLows   .clear()
             bucketVolumes.clear()
@@ -339,6 +322,35 @@ else
             bucketHigh := na(bucketHigh) ? high : math.max(bucketHigh, high)
             bucketLow  := na(bucketLow)  ? low  : math.min(bucketLow,  low)
             appendSamples(bucketHighs, bucketLows, bucketVolumes, currentBarHighs, currentBarLows, currentBarVolumes)
+
+        // Step 2: if this chart bar's close coincides with the current
+        // HTF bar's close, the bucket is now complete — snapshot it. The
+        // bucket arrays at this instant contain every confirmed sub-bar of
+        // the just-closed HTF window (including this bar's, just appended
+        // in step 1). The snapshot consumes the same data v6.0 would have
+        // consumed on the NEXT chart bar's isconfirmed, so VAH/VAL is
+        // byte-identical to v6.0. The difference is the commit moment:
+        // latestClosedVah/Val are written here, on the bucket-closing
+        // bar's confirm, so they're already in stable storage when the
+        // very next chart bar opens.
+        bool isBucketClosingBar = time_close == time_close(profileTimeframeString)
+        if isBucketClosingBar and hasFullBucketStarted and bucketHighs.size() > 0 and not na(bucketLow) and not na(bucketHigh)
+            [snapshotVah, snapshotVal, snapshotRowHeight, snapshotVahRowVolume, snapshotValRowVolume, snapshotTotalVolume] = calculateProfile(bucketLow, bucketHigh, bucketHighs, bucketLows, bucketVolumes)
+            latestClosedVah          := snapshotVah
+            latestClosedVal          := snapshotVal
+            latestClosedRowHeight    := snapshotRowHeight
+            latestClosedVahRowVolume := snapshotVahRowVolume
+            latestClosedValRowVolume := snapshotValRowVolume
+            latestClosedTotalVolume  := snapshotTotalVolume
+            latestClosedRangeLow     := bucketLow
+            latestClosedRangeHigh    := bucketHigh
+            latestClosedBucketTime   := previousBucketTime
+
+            bucketHighs  .clear()
+            bucketLows   .clear()
+            bucketVolumes.clear()
+            bucketHigh := na
+            bucketLow  := na
 
     int currentBucketOpenTime  = currentBucketTime
     int currentBucketCloseTime = time_close(profileTimeframeString)
