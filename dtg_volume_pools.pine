@@ -1,34 +1,43 @@
 //@version=6
-// DTG Volume Pools — Pine Script v6.1
+// DTG Volume Pools — Pine Script v6.2
 //
-// Cross-timeframe rebuild. All bucket aggregation and value-area math now
-// run inside a single 1-minute request.security() call, so the volume pool
-// produced on screen is driven by the same source clock and the same source
-// data regardless of the chart timeframe.
+// Eliminates the realtime lag at HTF bucket boundaries by splitting the
+// snapshot from the accumulation. All bucket math stays at the chart level,
+// fed by request.security_lower_tf(sym, "1", ...) which delivers 1-minute
+// data to every chart timeframe ≤ the profile timeframe.
 //
 // Changes vs v6.0:
-//   #1  Bucket aggregation + profile calculation moved into calcVolumePool()
-//       and executed via request.security(sym, "1", ...). The chart timeframe
-//       is now display-only — VAH/VAL on a 15m chart are byte-identical to
-//       VAH/VAL on a 1m chart for the same instrument and HTF setting.
-//   #2  Snapshot of the just-completed bucket fires on barstate.isnew of the
-//       first 1m bar of the new HTF window, BEFORE that bar's own data is
-//       appended. The bucket arrays at that instant already contain every
-//       confirmed 1m bar of the just-closed bucket, so the snapshot is
-//       byte-identical to the v6.0 end-of-first-bar snapshot — only the
-//       firing moment moves. This removes the one-chart-bar realtime lag at
-//       every HTF rollover.
-//   #3  request.security_lower_tf calls and the appendSamples helper are no
-//       longer needed — the 1m security context provides 1m bars directly.
+//   #1  The new-bucket SNAPSHOT (calculating VAH/VAL for the just-closed
+//       HTF bucket) is gated on barstate.isnew + isNewBucket, NOT on
+//       barstate.isconfirmed. By the moment a new HTF bucket opens on the
+//       chart — i.e. the first realtime tick of the first chart bar of
+//       that bucket — the previous bucket's arrays already contain every
+//       confirmed sub-bar of the just-closed window (they were filled on
+//       barstate.isconfirmed of each prior chart bar). Snapshotting at that
+//       instant produces a value-area that is byte-identical to v6.0's
+//       end-of-first-bar snapshot — only the firing moment moves earlier.
+//   #2  Accumulation of the CURRENT chart bar's data into the open bucket
+//       is still gated on barstate.isconfirmed. This preserves v6.0's #1
+//       fix: the in-progress chart bar is captured with final OHLCV and the
+//       fully populated request.security_lower_tf array, never with
+//       open-tick data.
 //
 // Behavioural contract preserved from v6.0:
 //   - Closed-bucket VAH/VAL is byte-identical (same row geometry, same
 //     half-open rows, same value-area expansion order, same tie-break, same
-//     "last accepted" rollback when the running total crosses the target).
+//     "last accepted" rollback).
 //   - First partial bucket on chart load is not emitted as a profile.
 //   - Bias logic (six HTF previous-close votes, lookahead_on + [1]) is
 //     unchanged.
 //   - Pool box / midline / debug table appearance and inputs are unchanged.
+//
+// Note on the v6.1 detour: that build tried to drive the math from a 1m
+// request.security() context. The snapshot fires correctly inside that
+// context, but TradingView's realtime feed only surfaces the lower-TF
+// security tuple to the chart on the chart bar's own evaluation cadence,
+// so the chart-side pool still flipped at chart-bar close, not at HTF
+// rollover. v6.2 puts the math back at chart level where barstate.isnew
+// reliably fires on the open tick of every chart bar in realtime.
 indicator("DTG Volume Pools (v6)", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
 
 profileTimeframe = input.string("4H", "Profile Timeframe", options = ["4H", "6H", "8H", "12H", "Daily", "Weekly"])
@@ -38,10 +47,37 @@ bearPoolColor    = input.color(color.new(color.red,  78), "Bearish Pool")
 bullMidlineColor = input.color(color.new(color.teal,  0), "Bullish Midline")
 bearMidlineColor = input.color(color.new(color.red,   0), "Bearish Midline")
 
-const string ROWS_LAYOUT    = "Number of Rows"
-const int    ROW_SIZE       = 24
-const int    VALUE_AREA_PCT = 70
-const string POOL_LTF       = "1"
+const string ROWS_LAYOUT     = "Number of Rows"
+const int    ROW_SIZE        = 24
+const int    VALUE_AREA_PCT  = 70
+const string LOWER_TIMEFRAME = "1"
+
+var array<float> bucketHighs   = array.new<float>()
+var array<float> bucketLows    = array.new<float>()
+var array<float> bucketVolumes = array.new<float>()
+
+var float bucketHigh               = na
+var float bucketLow                = na
+var int   previousBucketTime       = na
+var bool  isInitialized            = false
+var bool  hasFullBucketStarted     = false
+var label timeframeWarning         = na
+var float latestClosedVah          = na
+var float latestClosedVal          = na
+var float latestClosedRowHeight    = na
+var float latestClosedVahRowVolume = na
+var float latestClosedValRowVolume = na
+var float latestClosedTotalVolume  = na
+var float latestClosedRangeLow     = na
+var float latestClosedRangeHigh    = na
+var int   latestClosedBucketTime   = na
+var box   activePoolBox            = na
+var line  activePoolLine           = na
+var table debugTable               = table.new(position.bottom_right, 2, 12, border_width = 1)
+
+array<float> ltfHigh   = na
+array<float> ltfLow    = na
+array<float> ltfVolume = na
 
 profileTimeframeString = switch profileTimeframe
     "4H"     => "240"
@@ -60,6 +96,10 @@ profileTimeframeLabel = switch profileTimeframe
 maxSupportedSeconds = timeframe.in_seconds(profileTimeframeString)
 chartSeconds        = timeframe.in_seconds()
 isSupportedChart    = not na(chartSeconds) and chartSeconds <= maxSupportedSeconds
+currentBucketTime   = time(profileTimeframeString)
+isNewBucket         = ta.change(currentBucketTime) != 0
+lowerTfSeconds      = timeframe.in_seconds(LOWER_TIMEFRAME)
+canUseLowerTf       = isSupportedChart and not na(lowerTfSeconds) and lowerTfSeconds < chartSeconds
 
 getClosedBull(simple string tf) =>
     prevOpen  = request.security(syminfo.tickerid, tf, open[1],  lookahead = barmerge.lookahead_on)
@@ -78,6 +118,10 @@ bearVotes      = 6 - bullVotes
 isBullishBias  = bullVotes >= 4
 isBearishBias  = bearVotes >= 4
 biasText       = isBullishBias ? "Bullish" : isBearishBias ? "Bearish" : "Neutral"
+
+ltfHigh   := request.security_lower_tf(syminfo.tickerid, LOWER_TIMEFRAME, high)
+ltfLow    := request.security_lower_tf(syminfo.tickerid, LOWER_TIMEFRAME, low)
+ltfVolume := request.security_lower_tf(syminfo.tickerid, LOWER_TIMEFRAME, volume)
 
 formatVolume(float value) =>
     switch
@@ -168,6 +212,14 @@ calculateValueArea(array<float> rowTotals, int pocIndex, float totalVolume) =>
     int finalUpper = accumulated > targetVolume ? lastAcceptedUpper : upperIndex
     [finalLower, finalUpper]
 
+appendSamples(array<float> targetHighs, array<float> targetLows, array<float> targetVolumes, array<float> sourceHighs, array<float> sourceLows, array<float> sourceVolumes) =>
+    int n = sourceHighs.size()
+    if n > 0
+        for sampleIndex = 0 to n - 1
+            targetHighs  .push(sourceHighs  .get(sampleIndex))
+            targetLows   .push(sourceLows   .get(sampleIndex))
+            targetVolumes.push(sourceVolumes.get(sampleIndex))
+
 calculateProfile(float rangeLow, float rangeHigh, array<float> sourceHighs, array<float> sourceLows, array<float> sourceVolumes) =>
     float computedVah          = na
     float computedVal          = na
@@ -225,54 +277,29 @@ calculateProfile(float rangeLow, float rangeHigh, array<float> sourceHighs, arra
 
     [computedVah, computedVal, computedRowHeight, computedVahRowVolume, computedValRowVolume, computedTotalVolume]
 
-// 1-minute driver. All bucket state lives here, owned by the 1m security
-// context, so the result is independent of the chart's timeframe.
-//
-// Timing model:
-//   - barstate.isnew  + newBucket → snapshot the prior bucket (whose arrays
-//                                   are already complete from prior
-//                                   barstate.isconfirmed appends) and clear.
-//   - barstate.isconfirmed        → append THIS 1m bar's data into the
-//                                   currently open bucket. Also handles
-//                                   first-ever initialization and the
-//                                   first-partial-bucket guard.
-//
-// On historical bars both barstate flags fire in the same evaluation pass.
-// Pine executes top-to-bottom, so the snapshot block runs before the
-// accumulate block, which is the correct order: snapshot the previous bucket
-// first, then start populating the new one with this bar's data.
-calcVolumePool() =>
-    var array<float> bucketHighs   = array.new<float>()
-    var array<float> bucketLows    = array.new<float>()
-    var array<float> bucketVolumes = array.new<float>()
+if not isSupportedChart
+    if barstate.islast and na(timeframeWarning)
+        timeframeWarning := label.new(bar_index, high, "Use this indicator on " + profileTimeframeLabel + " or lower.", style = label.style_label_down, color = color.new(color.orange, 0), textcolor = color.white)
+else
+    if not na(timeframeWarning)
+        timeframeWarning.delete()
+        timeframeWarning := na
 
-    var float bucketHigh               = na
-    var float bucketLow                = na
-    var int   previousBucketTime       = na
-    var bool  isInitialized            = false
-    var bool  hasFullBucketStarted     = false
-
-    var float latestClosedVah          = na
-    var float latestClosedVal          = na
-    var float latestClosedRowHeight    = na
-    var float latestClosedVahRowVolume = na
-    var float latestClosedValRowVolume = na
-    var float latestClosedTotalVolume  = na
-    var float latestClosedRangeLow     = na
-    var float latestClosedRangeHigh    = na
-    var int   latestClosedBucketTime   = na
-
-    int  ctxBucketTime = time(profileTimeframeString)
-    bool newBucket     = ta.change(ctxBucketTime) != 0
-
-    if barstate.isnew and newBucket and isInitialized and hasFullBucketStarted and bucketHighs.size() > 0 and not na(bucketLow) and not na(bucketHigh)
-        [snapVah, snapVal, snapRowHeight, snapVahRowVol, snapValRowVol, snapTotVol] = calculateProfile(bucketLow, bucketHigh, bucketHighs, bucketLows, bucketVolumes)
-        latestClosedVah          := snapVah
-        latestClosedVal          := snapVal
-        latestClosedRowHeight    := snapRowHeight
-        latestClosedVahRowVolume := snapVahRowVol
-        latestClosedValRowVolume := snapValRowVol
-        latestClosedTotalVolume  := snapTotVol
+    // SNAPSHOT: fires on the first realtime tick of the first chart bar of a
+    // new HTF bucket. The bucket arrays at this instant are complete — every
+    // confirmed sub-bar of the just-closed HTF window has already been
+    // appended on the prior chart bar's barstate.isconfirmed pass. The
+    // current chart bar's own data is NOT yet in the arrays, which is
+    // intentional: that data belongs to the new bucket and will be appended
+    // in this same bar's barstate.isconfirmed pass further down.
+    if barstate.isnew and isNewBucket and isInitialized and hasFullBucketStarted and bucketHighs.size() > 0 and not na(bucketLow) and not na(bucketHigh)
+        [snapshotVah, snapshotVal, snapshotRowHeight, snapshotVahRowVolume, snapshotValRowVolume, snapshotTotalVolume] = calculateProfile(bucketLow, bucketHigh, bucketHighs, bucketLows, bucketVolumes)
+        latestClosedVah          := snapshotVah
+        latestClosedVal          := snapshotVal
+        latestClosedRowHeight    := snapshotRowHeight
+        latestClosedVahRowVolume := snapshotVahRowVolume
+        latestClosedValRowVolume := snapshotValRowVolume
+        latestClosedTotalVolume  := snapshotTotalVolume
         latestClosedRangeLow     := bucketLow
         latestClosedRangeHigh    := bucketHigh
         latestClosedBucketTime   := previousBucketTime
@@ -282,59 +309,48 @@ calcVolumePool() =>
         bucketVolumes.clear()
         bucketHigh         := na
         bucketLow          := na
-        previousBucketTime := ctxBucketTime
+        previousBucketTime := currentBucketTime
 
+    // ACCUMULATE: fires on chart bar close. Captures the bar's final OHLCV
+    // and the fully populated LTF array — same behaviour as v6.0. On a bar
+    // where the snapshot above also ran (the first chart bar of a new HTF
+    // bucket), bucketHigh/bucketLow are na from the snapshot's clear, so the
+    // na-aware update below correctly initialises them from this bar's
+    // high/low rather than carrying old bucket values forward.
     if barstate.isconfirmed
+        array<float> currentBarHighs   = canUseLowerTf and ltfHigh  .size() > 0 ? ltfHigh  .copy() : array.from(high)
+        array<float> currentBarLows    = canUseLowerTf and ltfLow   .size() > 0 ? ltfLow   .copy() : array.from(low)
+        array<float> currentBarVolumes = canUseLowerTf and ltfVolume.size() > 0 ? ltfVolume.copy() : array.from(nz(volume, 0.0))
+
         if not isInitialized
-            previousBucketTime   := ctxBucketTime
+            previousBucketTime   := currentBucketTime
             isInitialized        := true
             hasFullBucketStarted := false
-        else if newBucket and not hasFullBucketStarted
+        else if isNewBucket and not hasFullBucketStarted
             bucketHighs  .clear()
             bucketLows   .clear()
             bucketVolumes.clear()
             bucketHigh           := high
             bucketLow            := low
-            previousBucketTime   := ctxBucketTime
+            previousBucketTime   := currentBucketTime
             hasFullBucketStarted := true
-            bucketHighs  .push(high)
-            bucketLows   .push(low)
-            bucketVolumes.push(nz(volume, 0.0))
+            appendSamples(bucketHighs, bucketLows, bucketVolumes, currentBarHighs, currentBarLows, currentBarVolumes)
         else if hasFullBucketStarted
             bucketHigh := na(bucketHigh) ? high : math.max(bucketHigh, high)
             bucketLow  := na(bucketLow)  ? low  : math.min(bucketLow,  low)
-            bucketHighs  .push(high)
-            bucketLows   .push(low)
-            bucketVolumes.push(nz(volume, 0.0))
+            appendSamples(bucketHighs, bucketLows, bucketVolumes, currentBarHighs, currentBarLows, currentBarVolumes)
 
-    [latestClosedVah, latestClosedVal, latestClosedRowHeight, latestClosedVahRowVolume, latestClosedValRowVolume, latestClosedTotalVolume, latestClosedRangeLow, latestClosedRangeHigh, latestClosedBucketTime]
-
-[poolVah, poolVal, poolRowHeight, poolVahRowVolume, poolValRowVolume, poolTotalVolume, poolRangeLow, poolRangeHigh, poolBucketTime] = request.security(syminfo.tickerid, POOL_LTF, calcVolumePool(), lookahead = barmerge.lookahead_on)
-
-var label timeframeWarning = na
-var box   activePoolBox    = na
-var line  activePoolLine   = na
-var table debugTable       = table.new(position.bottom_right, 2, 12, border_width = 1)
-
-if not isSupportedChart
-    if barstate.islast and na(timeframeWarning)
-        timeframeWarning := label.new(bar_index, high, "Use this indicator on " + profileTimeframeLabel + " or lower.", style = label.style_label_down, color = color.new(color.orange, 0), textcolor = color.white)
-else
-    if not na(timeframeWarning)
-        timeframeWarning.delete()
-        timeframeWarning := na
-
-    int currentBucketOpenTime  = time(profileTimeframeString)
+    int currentBucketOpenTime  = currentBucketTime
     int currentBucketCloseTime = time_close(profileTimeframeString)
 
-    bool showBullPool = isBullishBias and not na(poolVal)
-    bool showBearPool = isBearishBias and not na(poolVah)
+    bool showBullPool = isBullishBias and not na(latestClosedVal)
+    bool showBearPool = isBearishBias and not na(latestClosedVah)
 
-    float  activePoolMid        = showBullPool ? poolVal : showBearPool ? poolVah : na
-    float  activePoolHalfBuffer = math.max(nz(poolRowHeight, syminfo.mintick) * poolBufferRows, syminfo.mintick)
+    float  activePoolMid        = showBullPool ? latestClosedVal : showBearPool ? latestClosedVah : na
+    float  activePoolHalfBuffer = math.max(nz(latestClosedRowHeight, syminfo.mintick) * poolBufferRows, syminfo.mintick)
     color  activePoolFill       = showBullPool ? bullPoolColor : showBearPool ? bearPoolColor : na
     color  activePoolLineColor  = showBullPool ? bullMidlineColor : showBearPool ? bearMidlineColor : na
-    float  activePoolRowVolume  = showBullPool ? poolValRowVolume : showBearPool ? poolVahRowVolume : na
+    float  activePoolRowVolume  = showBullPool ? latestClosedValRowVolume : showBearPool ? latestClosedVahRowVolume : na
     string activePoolVolume     = not na(activePoolRowVolume) ? formatVolume(activePoolRowVolume) : ""
 
     if not na(activePoolMid)
@@ -398,10 +414,10 @@ else
         debugTable.cell(1, 8, biasText, text_color = color.white, bgcolor = isBullishBias ? bullCell : isBearishBias ? bearCell : neutralCell)
 
         debugTable.cell(0, 9, "Closed", text_color = color.white, bgcolor = panelBg)
-        debugTable.cell(1, 9, na(poolBucketTime) ? "n/a" : str.format("{0,time,HH:mm}", poolBucketTime), text_color = color.white, bgcolor = panelBg)
+        debugTable.cell(1, 9, na(latestClosedBucketTime) ? "n/a" : str.format("{0,time,HH:mm}", latestClosedBucketTime), text_color = color.white, bgcolor = panelBg)
 
-        string rangeText  = na(poolRangeLow) ? "n/a" : str.tostring(poolRangeLow, format.mintick) + " — " + str.tostring(poolRangeHigh, format.mintick)
-        string totVolText = na(poolTotalVolume) ? "n/a" : formatVolume(poolTotalVolume)
+        string rangeText  = na(latestClosedRangeLow) ? "n/a" : str.tostring(latestClosedRangeLow, format.mintick) + " — " + str.tostring(latestClosedRangeHigh, format.mintick)
+        string totVolText = na(latestClosedTotalVolume) ? "n/a" : formatVolume(latestClosedTotalVolume)
 
         debugTable.cell(0, 10, "Range", text_color = color.white, bgcolor = panelBg)
         debugTable.cell(1, 10, rangeText, text_color = color.white, bgcolor = panelBg)
