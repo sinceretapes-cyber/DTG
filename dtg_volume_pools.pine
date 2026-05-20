@@ -44,8 +44,14 @@
 //     profile (hasFullBucketStarted guard retained).
 //   - Bias logic (six HTF previous-close votes, lookahead_on + [1]) is
 //     unchanged.
-//   - Pool box / midline / debug table appearance and inputs are
-//     unchanged.
+//   - Pool box / midline appearance and inputs are unchanged.
+//
+// Removed in v6.3.1:
+//   - The bottom-right debug table (TF votes / Bias / Closed / Range /
+//     TotVol). Bias logic itself is retained because it still selects
+//     whether the pool draws against VAL (bullish) or VAH (bearish);
+//     only the on-chart panel is gone, along with the `biasText`
+//     formatter that fed it.
 indicator("DTG Volume Pools (v6)", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
 
 profileTimeframe = input.string("4H", "Profile Timeframe", options = ["4H", "6H", "8H", "12H", "Daily", "Weekly"])
@@ -81,7 +87,6 @@ var float latestClosedRangeHigh    = na
 var int   latestClosedBucketTime   = na
 var box   activePoolBox            = na
 var line  activePoolLine           = na
-var table debugTable               = table.new(position.bottom_right, 2, 12, border_width = 1)
 
 array<float> ltfHigh   = na
 array<float> ltfLow    = na
@@ -125,7 +130,6 @@ bullVotes      = fourHourBull + sixHourBull + eightHourBull + twelveHourBull + d
 bearVotes      = 6 - bullVotes
 isBullishBias  = bullVotes >= 4
 isBearishBias  = bearVotes >= 4
-biasText       = isBullishBias ? "Bullish" : isBearishBias ? "Bearish" : "Neutral"
 
 ltfHigh   := request.security_lower_tf(syminfo.tickerid, LOWER_TIMEFRAME, high)
 ltfLow    := request.security_lower_tf(syminfo.tickerid, LOWER_TIMEFRAME, low)
@@ -391,48 +395,3 @@ else
         if not na(activePoolLine)
             activePoolLine.delete()
             activePoolLine := na
-
-    if barstate.islast
-        color bullCell    = color.new(color.teal, 70)
-        color bearCell    = color.new(color.red,  70)
-        color neutralCell = color.new(color.gray, 75)
-        color panelBg     = color.new(color.black, 15)
-
-        debugTable.cell(0, 0, "TF",    text_color = color.white, bgcolor = panelBg)
-        debugTable.cell(1, 0, "State", text_color = color.white, bgcolor = panelBg)
-
-        debugTable.cell(0, 1, "4H",  text_color = color.white, bgcolor = panelBg)
-        debugTable.cell(1, 1, fourHourBull   == 1 ? "Bull" : "Bear", text_color = color.white, bgcolor = fourHourBull   == 1 ? bullCell : bearCell)
-
-        debugTable.cell(0, 2, "6H",  text_color = color.white, bgcolor = panelBg)
-        debugTable.cell(1, 2, sixHourBull    == 1 ? "Bull" : "Bear", text_color = color.white, bgcolor = sixHourBull    == 1 ? bullCell : bearCell)
-
-        debugTable.cell(0, 3, "8H",  text_color = color.white, bgcolor = panelBg)
-        debugTable.cell(1, 3, eightHourBull  == 1 ? "Bull" : "Bear", text_color = color.white, bgcolor = eightHourBull  == 1 ? bullCell : bearCell)
-
-        debugTable.cell(0, 4, "12H", text_color = color.white, bgcolor = panelBg)
-        debugTable.cell(1, 4, twelveHourBull == 1 ? "Bull" : "Bear", text_color = color.white, bgcolor = twelveHourBull == 1 ? bullCell : bearCell)
-
-        debugTable.cell(0, 5, "1D",  text_color = color.white, bgcolor = panelBg)
-        debugTable.cell(1, 5, dailyBull      == 1 ? "Bull" : "Bear", text_color = color.white, bgcolor = dailyBull      == 1 ? bullCell : bearCell)
-
-        debugTable.cell(0, 6, "1W",  text_color = color.white, bgcolor = panelBg)
-        debugTable.cell(1, 6, weeklyBull     == 1 ? "Bull" : "Bear", text_color = color.white, bgcolor = weeklyBull     == 1 ? bullCell : bearCell)
-
-        debugTable.cell(0, 7, "Votes", text_color = color.white, bgcolor = panelBg)
-        debugTable.cell(1, 7, str.tostring(bullVotes) + " Bull / " + str.tostring(bearVotes) + " Bear", text_color = color.white, bgcolor = panelBg)
-
-        debugTable.cell(0, 8, "Bias", text_color = color.white, bgcolor = panelBg)
-        debugTable.cell(1, 8, biasText, text_color = color.white, bgcolor = isBullishBias ? bullCell : isBearishBias ? bearCell : neutralCell)
-
-        debugTable.cell(0, 9, "Closed", text_color = color.white, bgcolor = panelBg)
-        debugTable.cell(1, 9, na(latestClosedBucketTime) ? "n/a" : str.format("{0,time,HH:mm}", latestClosedBucketTime), text_color = color.white, bgcolor = panelBg)
-
-        string rangeText  = na(latestClosedRangeLow) ? "n/a" : str.tostring(latestClosedRangeLow, format.mintick) + " — " + str.tostring(latestClosedRangeHigh, format.mintick)
-        string totVolText = na(latestClosedTotalVolume) ? "n/a" : formatVolume(latestClosedTotalVolume)
-
-        debugTable.cell(0, 10, "Range", text_color = color.white, bgcolor = panelBg)
-        debugTable.cell(1, 10, rangeText, text_color = color.white, bgcolor = panelBg)
-
-        debugTable.cell(0, 11, "TotVol", text_color = color.white, bgcolor = panelBg)
-        debugTable.cell(1, 11, totVolText, text_color = color.white, bgcolor = panelBg)
