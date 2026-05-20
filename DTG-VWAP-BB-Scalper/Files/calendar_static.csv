@@ -1,0 +1,19 @@
+# DTG VWAP-BB Scalper — static fallback economic calendar
+# Used when running in the MT5 Strategy Tester (live calendar is unavailable there)
+# and when InpUseStaticCsvInTester = true.
+#
+# Format: yyyy.mm.dd HH:MM;currency;event_name;impact;kind
+#   * Time is interpreted as UTC.
+#   * impact = HIGH | MEDIUM | LOW
+#   * kind   = NORMAL | NFP | FOMC
+#
+# Replace these placeholder rows with the real high-impact USD/EUR events for
+# your back-test window (or import from a public calendar archive).
+# Example NFP entries (first Friday of each month, 12:30 UTC during DST):
+# 2023.01.06 13:30;USD;Non-Farm Employment Change;HIGH;NFP
+# 2023.02.03 13:30;USD;Non-Farm Employment Change;HIGH;NFP
+# 2023.03.10 13:30;USD;Non-Farm Employment Change;HIGH;NFP
+#
+# Example FOMC entries (rate decision days, 18:00 UTC):
+# 2023.02.01 19:00;USD;FOMC Rate Decision;HIGH;FOMC
+# 2023.03.22 18:00;USD;FOMC Rate Decision;HIGH;FOMC
