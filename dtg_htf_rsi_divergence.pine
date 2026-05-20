@@ -107,8 +107,8 @@ hline(30, "Oversold",   color = color.new(color.gray, 50))
 styleOf(simple string s) =>
     s == "dashed" ? line.style_dashed : s == "dotted" ? line.style_dotted : line.style_solid
 
-simple int priceStyle = styleOf(priceLineStyle)
-simple int rsiStyle   = styleOf(rsiLineStyle)
+simple string priceStyle = styleOf(priceLineStyle)
+simple string rsiStyle   = styleOf(rsiLineStyle)
 
 // ---------------- State type ----------------
 // One instance per HTF — holds the running extremes of the current HTF
