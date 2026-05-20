@@ -172,12 +172,28 @@ upsertRsiLine(line ln, int x1, float y1, int x2, float y2, color c) =>
         line.set_color(out, c)
     out
 
-// Create-or-update a label.
-upsertLabel(label lb, int x, float y, string txt, color c, bool onPrice, bool bearish) =>
+// Create-or-update a label that lives on the PRICE pane.
+// Note: `force_overlay` on label.new requires a const bool, so we need a
+// dedicated function per pane rather than a single helper with a runtime
+// flag.
+upsertLabelPrice(label lb, int x, float y, string txt, color c, bool bearish) =>
     label out = lb
     style = bearish ? label.style_label_down : label.style_label_up
     if na(out)
-        out := label.new(x, y, txt, xloc = xloc.bar_index, style = style, color = c, textcolor = color.white, size = size.small, force_overlay = onPrice)
+        out := label.new(x, y, txt, xloc = xloc.bar_index, style = style, color = c, textcolor = color.white, size = size.small, force_overlay = true)
+    else
+        label.set_xy(out, x, y)
+        label.set_text(out, txt)
+        label.set_color(out, c)
+        label.set_style(out, style)
+    out
+
+// Create-or-update a label that lives on the RSI pane.
+upsertLabelRsi(label lb, int x, float y, string txt, color c, bool bearish) =>
+    label out = lb
+    style = bearish ? label.style_label_down : label.style_label_up
+    if na(out)
+        out := label.new(x, y, txt, xloc = xloc.bar_index, style = style, color = c, textcolor = color.white, size = size.small, force_overlay = false)
     else
         label.set_xy(out, x, y)
         label.set_text(out, txt)
@@ -286,9 +302,9 @@ process(simple string tfStr, simple bool enabled, simple color tfCol, simple str
             if showLabels
                 txt = tfTag + " Bear Div"
                 if labelOnPrice
-                    st.bearRegLbl := upsertLabel(st.bearRegLbl, st.curHiBar,    st.curHi,    txt, c, true,  true)
+                    st.bearRegLbl := upsertLabelPrice(st.bearRegLbl, st.curHiBar,    st.curHi,    txt, c, true)
                 else if labelOnRsi
-                    st.bearRegLbl := upsertLabel(st.bearRegLbl, st.curRsiHiBar, st.curRsiHi, txt, c, false, true)
+                    st.bearRegLbl := upsertLabelRsi(st.bearRegLbl,   st.curRsiHiBar, st.curRsiHi, txt, c, true)
         else
             st.bearRegPrice := clearLine(st.bearRegPrice)
             st.bearRegRsi   := clearLine(st.bearRegRsi)
@@ -304,9 +320,9 @@ process(simple string tfStr, simple bool enabled, simple color tfCol, simple str
             if showLabels
                 txt = tfTag + " Hidden Bear"
                 if labelOnPrice
-                    st.bearHidLbl := upsertLabel(st.bearHidLbl, st.curHiBar,    st.curHi,    txt, c, true,  true)
+                    st.bearHidLbl := upsertLabelPrice(st.bearHidLbl, st.curHiBar,    st.curHi,    txt, c, true)
                 else if labelOnRsi
-                    st.bearHidLbl := upsertLabel(st.bearHidLbl, st.curRsiHiBar, st.curRsiHi, txt, c, false, true)
+                    st.bearHidLbl := upsertLabelRsi(st.bearHidLbl,   st.curRsiHiBar, st.curRsiHi, txt, c, true)
         else
             st.bearHidPrice := clearLine(st.bearHidPrice)
             st.bearHidRsi   := clearLine(st.bearHidRsi)
@@ -322,9 +338,9 @@ process(simple string tfStr, simple bool enabled, simple color tfCol, simple str
             if showLabels
                 txt = tfTag + " Bull Div"
                 if labelOnPrice
-                    st.bullRegLbl := upsertLabel(st.bullRegLbl, st.curLoBar,    st.curLo,    txt, c, true,  false)
+                    st.bullRegLbl := upsertLabelPrice(st.bullRegLbl, st.curLoBar,    st.curLo,    txt, c, false)
                 else if labelOnRsi
-                    st.bullRegLbl := upsertLabel(st.bullRegLbl, st.curRsiLoBar, st.curRsiLo, txt, c, false, false)
+                    st.bullRegLbl := upsertLabelRsi(st.bullRegLbl,   st.curRsiLoBar, st.curRsiLo, txt, c, false)
         else
             st.bullRegPrice := clearLine(st.bullRegPrice)
             st.bullRegRsi   := clearLine(st.bullRegRsi)
@@ -340,9 +356,9 @@ process(simple string tfStr, simple bool enabled, simple color tfCol, simple str
             if showLabels
                 txt = tfTag + " Hidden Bull"
                 if labelOnPrice
-                    st.bullHidLbl := upsertLabel(st.bullHidLbl, st.curLoBar,    st.curLo,    txt, c, true,  false)
+                    st.bullHidLbl := upsertLabelPrice(st.bullHidLbl, st.curLoBar,    st.curLo,    txt, c, false)
                 else if labelOnRsi
-                    st.bullHidLbl := upsertLabel(st.bullHidLbl, st.curRsiLoBar, st.curRsiLo, txt, c, false, false)
+                    st.bullHidLbl := upsertLabelRsi(st.bullHidLbl,   st.curRsiLoBar, st.curRsiLo, txt, c, false)
         else
             st.bullHidPrice := clearLine(st.bullHidPrice)
             st.bullHidRsi   := clearLine(st.bullHidRsi)
