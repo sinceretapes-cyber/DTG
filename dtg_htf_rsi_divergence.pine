@@ -1,0 +1,411 @@
+//@version=6
+// DTG HTF RSI Divergence — Pine Script v6
+//
+// Multi-timeframe RSI divergence detector.
+//
+// Concept
+// -------
+// You view your entry chart on a low timeframe (1m / 5m / 15m / 30m / 1h)
+// but want to spot divergence between price wicks and RSI on your key
+// HIGHER timeframes (4H / 6H / 8H / 12H / Daily / Weekly).
+//
+// For each enabled HTF the indicator tracks, per HTF candle window:
+//   • the wick HIGH and wick LOW of price                (= chart bar high/low)
+//   • the highest and lowest RSI value reached           (= chart bar RSI extremes)
+// It then compares the CURRENT HTF candle window against the PREVIOUS one:
+//
+//   Regular Bearish : price HH + RSI lower high   (classic top reversal)
+//   Hidden  Bearish : price LH + RSI higher high  (trend-continuation short)
+//   Regular Bullish : price LL + RSI higher low   (classic bottom reversal)
+//   Hidden  Bullish : price HL + RSI lower  low   (trend-continuation long)
+//
+// "Break it on the chart but not on the RSI"  → Regular divergence.
+// "Break it on the RSI but not on the chart"  → Hidden  divergence.
+//
+// Drawing
+// -------
+// When a divergence is currently active in the in-progress HTF window the
+// indicator draws:
+//   • a line on the PRICE chart (force_overlay) connecting the prev HTF
+//     wick extreme to the current HTF wick extreme,
+//   • a matching line in the RSI sub-pane connecting the prev HTF RSI
+//     extreme to the current HTF RSI extreme,
+//   • a label tagged with the HTF and divergence type.
+//
+// The endpoints stretch as the current HTF candle's extremes extend. When
+// the HTF candle closes, the drawings are "released" (left on chart as
+// history) and a fresh comparison begins for the next HTF window.
+//
+// Non-repaint
+// -----------
+// We use request.security() ONLY to fetch the HTF candle's `time` so we
+// can detect HTF boundary changes on the chart timeframe. The actual
+// price/RSI extremes are computed from chart bars within those boundaries
+// — they never repaint historically. The in-progress (right-most) HTF
+// window naturally updates as new chart bars print, which is what you
+// want for live setups.
+indicator("DTG HTF RSI Divergence", shorttitle = "HTF RSI Div", overlay = false, max_lines_count = 500, max_labels_count = 500)
+
+// ---------------- Inputs ----------------
+const string G_RSI    = "RSI"
+const string G_TYPES  = "Divergence Types"
+const string G_DISP   = "Display"
+const string G_HTF    = "Higher Timeframes"
+const string G_COLOR  = "Colors"
+
+rsiLen = input.int(14,    "RSI Length", minval = 2,  group = G_RSI)
+rsiSrc = input.source(close, "RSI Source",            group = G_RSI)
+
+showRegBear = input.bool(true,  "Regular Bearish (price HH, RSI LH)", group = G_TYPES)
+showHidBear = input.bool(true,  "Hidden Bearish  (price LH, RSI HH)", group = G_TYPES)
+showRegBull = input.bool(true,  "Regular Bullish (price LL, RSI HL)", group = G_TYPES)
+showHidBull = input.bool(true,  "Hidden Bullish  (price HL, RSI LL)", group = G_TYPES)
+
+drawOnPrice    = input.bool(true,  "Draw lines on price chart",  group = G_DISP)
+drawOnRsi      = input.bool(true,  "Draw lines on RSI pane",     group = G_DISP)
+showLabels     = input.bool(true,  "Show labels",                group = G_DISP)
+labelOnPrice   = input.bool(true,  "Label on price pane",        group = G_DISP)
+labelOnRsi     = input.bool(true,  "Label on RSI pane",          group = G_DISP)
+lineWidth      = input.int(1,      "Line width", minval = 1, maxval = 5, group = G_DISP)
+priceLineStyle = input.string("solid", "Price line style", options = ["solid", "dashed", "dotted"], group = G_DISP)
+rsiLineStyle   = input.string("solid", "RSI line style",   options = ["solid", "dashed", "dotted"], group = G_DISP)
+
+// Higher timeframes — each can be enabled and customised
+en4   = input.bool(true,  "4H",     inline = "4h",  group = G_HTF)
+tf4   = input.timeframe("240", "",  inline = "4h",  group = G_HTF)
+en6   = input.bool(false, "6H",     inline = "6h",  group = G_HTF)
+tf6   = input.timeframe("360", "",  inline = "6h",  group = G_HTF)
+en8   = input.bool(false, "8H",     inline = "8h",  group = G_HTF)
+tf8   = input.timeframe("480", "",  inline = "8h",  group = G_HTF)
+en12  = input.bool(false, "12H",    inline = "12h", group = G_HTF)
+tf12  = input.timeframe("720", "",  inline = "12h", group = G_HTF)
+enD   = input.bool(true,  "Daily",  inline = "d",   group = G_HTF)
+tfD   = input.timeframe("D",   "",  inline = "d",   group = G_HTF)
+enW   = input.bool(false, "Weekly", inline = "w",   group = G_HTF)
+tfW   = input.timeframe("W",   "",  inline = "w",   group = G_HTF)
+
+// Colors — one base per TF, with bear/bull tints layered on top.
+col4   = input.color(color.new(color.orange,  0), "4H",     group = G_COLOR)
+col6   = input.color(color.new(color.yellow,  0), "6H",     group = G_COLOR)
+col8   = input.color(color.new(color.aqua,    0), "8H",     group = G_COLOR)
+col12  = input.color(color.new(color.fuchsia, 0), "12H",    group = G_COLOR)
+colD   = input.color(color.new(#2962FF,       0), "Daily",  group = G_COLOR)
+colW   = input.color(color.new(color.purple,  0), "Weekly", group = G_COLOR)
+
+bearReg_Col = input.color(color.new(#E53935, 0),  "Regular Bearish tint", group = G_COLOR)
+bearHid_Col = input.color(color.new(#EF5350, 30), "Hidden  Bearish tint", group = G_COLOR)
+bullReg_Col = input.color(color.new(#43A047, 0),  "Regular Bullish tint", group = G_COLOR)
+bullHid_Col = input.color(color.new(#66BB6A, 30), "Hidden  Bullish tint", group = G_COLOR)
+
+// ---------------- RSI plot ----------------
+rsiVal = ta.rsi(rsiSrc, rsiLen)
+plot(rsiVal, "RSI", color = color.new(#7E57C2, 0), linewidth = 2)
+hline(70, "Overbought", color = color.new(color.gray, 50))
+hline(50, "Mid",        color = color.new(color.gray, 80))
+hline(30, "Oversold",   color = color.new(color.gray, 50))
+
+styleOf(simple string s) =>
+    s == "dashed" ? line.style_dashed : s == "dotted" ? line.style_dotted : line.style_solid
+
+simple string priceStyle = styleOf(priceLineStyle)
+simple string rsiStyle   = styleOf(rsiLineStyle)
+
+// ---------------- State type ----------------
+// One instance per HTF — holds the running extremes of the current HTF
+// window, the locked-in extremes of the previous HTF window, and the
+// drawing handles for any divergence currently active in this window.
+type DivState
+    // current HTF window (in-progress) — extremes and the chart bar that made them
+    float curHi      = na
+    float curLo      = na
+    float curRsiHi   = na
+    float curRsiLo   = na
+    int   curHiBar   = na
+    int   curLoBar   = na
+    int   curRsiHiBar= na
+    int   curRsiLoBar= na
+    // previous HTF window (finalised) — extremes and the chart bar that made them
+    float prevHi     = na
+    float prevLo     = na
+    float prevRsiHi  = na
+    float prevRsiLo  = na
+    int   prevHiBar  = na
+    int   prevLoBar  = na
+    int   prevRsiHiBar = na
+    int   prevRsiLoBar = na
+    // active drawing handles for this HTF window (one per divergence type)
+    line  bearRegPrice  = na
+    line  bearRegRsi    = na
+    label bearRegLbl    = na
+    line  bearHidPrice  = na
+    line  bearHidRsi    = na
+    label bearHidLbl    = na
+    line  bullRegPrice  = na
+    line  bullRegRsi    = na
+    label bullRegLbl    = na
+    line  bullHidPrice  = na
+    line  bullHidRsi    = na
+    label bullHidLbl    = na
+
+// ---------------- Drawing helpers ----------------
+// Create-or-update a price-pane line connecting (x1,y1) → (x2,y2).
+// Lines are force_overlay so they appear on the chart while the
+// indicator itself lives in the RSI sub-pane.
+upsertPriceLine(line ln, int x1, float y1, int x2, float y2, color c) =>
+    line out = ln
+    if na(out)
+        out := line.new(x1, y1, x2, y2, xloc = xloc.bar_index, color = c, style = priceStyle, width = lineWidth, force_overlay = true)
+    else
+        line.set_xy1(out, x1, y1)
+        line.set_xy2(out, x2, y2)
+        line.set_color(out, c)
+    out
+
+// Create-or-update an RSI-pane line.
+upsertRsiLine(line ln, int x1, float y1, int x2, float y2, color c) =>
+    line out = ln
+    if na(out)
+        out := line.new(x1, y1, x2, y2, xloc = xloc.bar_index, color = c, style = rsiStyle, width = lineWidth)
+    else
+        line.set_xy1(out, x1, y1)
+        line.set_xy2(out, x2, y2)
+        line.set_color(out, c)
+    out
+
+// Create-or-update a label that lives on the PRICE pane.
+// Note: `force_overlay` on label.new requires a const bool, so we need a
+// dedicated function per pane rather than a single helper with a runtime
+// flag.
+upsertLabelPrice(label lb, int x, float y, string txt, color c, bool bearish) =>
+    label out = lb
+    style = bearish ? label.style_label_down : label.style_label_up
+    if na(out)
+        out := label.new(x, y, txt, xloc = xloc.bar_index, style = style, color = c, textcolor = color.white, size = size.small, force_overlay = true)
+    else
+        label.set_xy(out, x, y)
+        label.set_text(out, txt)
+        label.set_color(out, c)
+        label.set_style(out, style)
+    out
+
+// Create-or-update a label that lives on the RSI pane.
+upsertLabelRsi(label lb, int x, float y, string txt, color c, bool bearish) =>
+    label out = lb
+    style = bearish ? label.style_label_down : label.style_label_up
+    if na(out)
+        out := label.new(x, y, txt, xloc = xloc.bar_index, style = style, color = c, textcolor = color.white, size = size.small, force_overlay = false)
+    else
+        label.set_xy(out, x, y)
+        label.set_text(out, txt)
+        label.set_color(out, c)
+        label.set_style(out, style)
+    out
+
+// Mid-window invalidation: delete any active drawings for a divergence
+// type that is no longer valid. Returns na so the caller can clear the
+// state field in one expression.
+clearLine(line ln) =>
+    if not na(ln)
+        line.delete(ln)
+    line na_line = na
+    na_line
+
+clearLabel(label lb) =>
+    if not na(lb)
+        label.delete(lb)
+    label na_lbl = na
+    na_lbl
+
+// ---------------- Per-HTF processing ----------------
+// One call per enabled HTF. Each call site gets its own `var DivState`,
+// keeping the six HTFs independent.
+process(simple string tfStr, simple bool enabled, simple color tfCol, simple string tfTag) =>
+    var DivState st = DivState.new()
+
+    if enabled
+        // Detect HTF candle boundary on the chart timeframe.
+        // lookahead_on + same-bar time is the standard non-repainting
+        // way to fetch the open-time of the HTF bar that contains the
+        // current chart bar. ta.change() != 0 fires on the first chart
+        // bar of each new HTF window.
+        htfTime = request.security(syminfo.tickerid, tfStr, time, lookahead = barmerge.lookahead_on, gaps = barmerge.gaps_off)
+        bool isNew = not na(htfTime) and ta.change(htfTime) != 0
+
+        if isNew
+            // Roll: lock in the just-finished window as "previous",
+            // reset "current" to this chart bar, and release the active
+            // drawing handles so a fresh set of drawings will be created
+            // if divergence (re-)appears in the new window. Old drawings
+            // stay on the chart as historical record.
+            st.prevHi       := st.curHi
+            st.prevLo       := st.curLo
+            st.prevRsiHi    := st.curRsiHi
+            st.prevRsiLo    := st.curRsiLo
+            st.prevHiBar    := st.curHiBar
+            st.prevLoBar    := st.curLoBar
+            st.prevRsiHiBar := st.curRsiHiBar
+            st.prevRsiLoBar := st.curRsiLoBar
+
+            st.curHi        := high
+            st.curLo        := low
+            st.curRsiHi     := rsiVal
+            st.curRsiLo     := rsiVal
+            st.curHiBar     := bar_index
+            st.curLoBar     := bar_index
+            st.curRsiHiBar  := bar_index
+            st.curRsiLoBar  := bar_index
+
+            st.bearRegPrice := na
+            st.bearRegRsi   := na
+            st.bearRegLbl   := na
+            st.bearHidPrice := na
+            st.bearHidRsi   := na
+            st.bearHidLbl   := na
+            st.bullRegPrice := na
+            st.bullRegRsi   := na
+            st.bullRegLbl   := na
+            st.bullHidPrice := na
+            st.bullHidRsi   := na
+            st.bullHidLbl   := na
+        else
+            // Extend the current HTF window's running extremes with
+            // this chart bar's values.
+            if na(st.curHi) or high > st.curHi
+                st.curHi    := high
+                st.curHiBar := bar_index
+            if na(st.curLo) or low < st.curLo
+                st.curLo    := low
+                st.curLoBar := bar_index
+            if na(st.curRsiHi) or (not na(rsiVal) and rsiVal > st.curRsiHi)
+                st.curRsiHi    := rsiVal
+                st.curRsiHiBar := bar_index
+            if na(st.curRsiLo) or (not na(rsiVal) and rsiVal < st.curRsiLo)
+                st.curRsiLo    := rsiVal
+                st.curRsiLoBar := bar_index
+
+        // Need a finalised previous HTF window before we can compare.
+        bool hasPrev = not na(st.prevHi) and not na(st.prevLo) and not na(st.prevRsiHi) and not na(st.prevRsiLo)
+
+        // Four divergence conditions (evaluated against the live current window).
+        bool bearReg = hasPrev and showRegBear and st.curHi > st.prevHi and st.curRsiHi < st.prevRsiHi
+        bool bearHid = hasPrev and showHidBear and st.curHi < st.prevHi and st.curRsiHi > st.prevRsiHi
+        bool bullReg = hasPrev and showRegBull and st.curLo < st.prevLo and st.curRsiLo > st.prevRsiLo
+        bool bullHid = hasPrev and showHidBull and st.curLo > st.prevLo and st.curRsiLo < st.prevRsiLo
+
+        // ----- Regular Bearish -----
+        if bearReg
+            c = bearReg_Col
+            if drawOnPrice
+                st.bearRegPrice := upsertPriceLine(st.bearRegPrice, st.prevHiBar, st.prevHi, st.curHiBar, st.curHi, c)
+            if drawOnRsi
+                st.bearRegRsi   := upsertRsiLine(st.bearRegRsi,    st.prevRsiHiBar, st.prevRsiHi, st.curRsiHiBar, st.curRsiHi, c)
+            if showLabels
+                txt = tfTag + " Bear Div"
+                if labelOnPrice
+                    st.bearRegLbl := upsertLabelPrice(st.bearRegLbl, st.curHiBar,    st.curHi,    txt, c, true)
+                else if labelOnRsi
+                    st.bearRegLbl := upsertLabelRsi(st.bearRegLbl,   st.curRsiHiBar, st.curRsiHi, txt, c, true)
+        else
+            st.bearRegPrice := clearLine(st.bearRegPrice)
+            st.bearRegRsi   := clearLine(st.bearRegRsi)
+            st.bearRegLbl   := clearLabel(st.bearRegLbl)
+
+        // ----- Hidden Bearish -----
+        if bearHid
+            c = bearHid_Col
+            if drawOnPrice
+                st.bearHidPrice := upsertPriceLine(st.bearHidPrice, st.prevHiBar, st.prevHi, st.curHiBar, st.curHi, c)
+            if drawOnRsi
+                st.bearHidRsi   := upsertRsiLine(st.bearHidRsi,    st.prevRsiHiBar, st.prevRsiHi, st.curRsiHiBar, st.curRsiHi, c)
+            if showLabels
+                txt = tfTag + " Hidden Bear"
+                if labelOnPrice
+                    st.bearHidLbl := upsertLabelPrice(st.bearHidLbl, st.curHiBar,    st.curHi,    txt, c, true)
+                else if labelOnRsi
+                    st.bearHidLbl := upsertLabelRsi(st.bearHidLbl,   st.curRsiHiBar, st.curRsiHi, txt, c, true)
+        else
+            st.bearHidPrice := clearLine(st.bearHidPrice)
+            st.bearHidRsi   := clearLine(st.bearHidRsi)
+            st.bearHidLbl   := clearLabel(st.bearHidLbl)
+
+        // ----- Regular Bullish -----
+        if bullReg
+            c = bullReg_Col
+            if drawOnPrice
+                st.bullRegPrice := upsertPriceLine(st.bullRegPrice, st.prevLoBar, st.prevLo, st.curLoBar, st.curLo, c)
+            if drawOnRsi
+                st.bullRegRsi   := upsertRsiLine(st.bullRegRsi,    st.prevRsiLoBar, st.prevRsiLo, st.curRsiLoBar, st.curRsiLo, c)
+            if showLabels
+                txt = tfTag + " Bull Div"
+                if labelOnPrice
+                    st.bullRegLbl := upsertLabelPrice(st.bullRegLbl, st.curLoBar,    st.curLo,    txt, c, false)
+                else if labelOnRsi
+                    st.bullRegLbl := upsertLabelRsi(st.bullRegLbl,   st.curRsiLoBar, st.curRsiLo, txt, c, false)
+        else
+            st.bullRegPrice := clearLine(st.bullRegPrice)
+            st.bullRegRsi   := clearLine(st.bullRegRsi)
+            st.bullRegLbl   := clearLabel(st.bullRegLbl)
+
+        // ----- Hidden Bullish -----
+        if bullHid
+            c = bullHid_Col
+            if drawOnPrice
+                st.bullHidPrice := upsertPriceLine(st.bullHidPrice, st.prevLoBar, st.prevLo, st.curLoBar, st.curLo, c)
+            if drawOnRsi
+                st.bullHidRsi   := upsertRsiLine(st.bullHidRsi,    st.prevRsiLoBar, st.prevRsiLo, st.curRsiLoBar, st.curRsiLo, c)
+            if showLabels
+                txt = tfTag + " Hidden Bull"
+                if labelOnPrice
+                    st.bullHidLbl := upsertLabelPrice(st.bullHidLbl, st.curLoBar,    st.curLo,    txt, c, false)
+                else if labelOnRsi
+                    st.bullHidLbl := upsertLabelRsi(st.bullHidLbl,   st.curRsiLoBar, st.curRsiLo, txt, c, false)
+        else
+            st.bullHidPrice := clearLine(st.bullHidPrice)
+            st.bullHidRsi   := clearLine(st.bullHidRsi)
+            st.bullHidLbl   := clearLabel(st.bullHidLbl)
+
+    [st, st.curHi, st.curLo, st.curRsiHi, st.curRsiLo]
+
+// ---------------- Run each HTF ----------------
+[s4,  _h4,  _l4,  _rh4,  _rl4]  = process(tf4,  en4,  col4,  "4H")
+[s6,  _h6,  _l6,  _rh6,  _rl6]  = process(tf6,  en6,  col6,  "6H")
+[s8,  _h8,  _l8,  _rh8,  _rl8]  = process(tf8,  en8,  col8,  "8H")
+[s12, _h12, _l12, _rh12, _rl12] = process(tf12, en12, col12, "12H")
+[sD,  _hD,  _lD,  _rhD,  _rlD]  = process(tfD,  enD,  colD,  "D")
+[sW,  _hW,  _lW,  _rhW,  _rlW]  = process(tfW,  enW,  colW,  "W")
+
+// ---------------- Alert conditions ----------------
+// One alertcondition per HTF × divergence type. They fire whenever the
+// divergence is active in the current HTF window — use TradingView's
+// "Once Per Bar" alert option to avoid duplicate notifications.
+isActive(line ln) => not na(ln)
+
+alertcondition(isActive(s4.bearRegPrice)  or isActive(s4.bearRegRsi),  "4H Regular Bearish",  "4H Regular Bearish Divergence")
+alertcondition(isActive(s4.bearHidPrice)  or isActive(s4.bearHidRsi),  "4H Hidden Bearish",   "4H Hidden Bearish Divergence")
+alertcondition(isActive(s4.bullRegPrice)  or isActive(s4.bullRegRsi),  "4H Regular Bullish",  "4H Regular Bullish Divergence")
+alertcondition(isActive(s4.bullHidPrice)  or isActive(s4.bullHidRsi),  "4H Hidden Bullish",   "4H Hidden Bullish Divergence")
+
+alertcondition(isActive(s6.bearRegPrice)  or isActive(s6.bearRegRsi),  "6H Regular Bearish",  "6H Regular Bearish Divergence")
+alertcondition(isActive(s6.bearHidPrice)  or isActive(s6.bearHidRsi),  "6H Hidden Bearish",   "6H Hidden Bearish Divergence")
+alertcondition(isActive(s6.bullRegPrice)  or isActive(s6.bullRegRsi),  "6H Regular Bullish",  "6H Regular Bullish Divergence")
+alertcondition(isActive(s6.bullHidPrice)  or isActive(s6.bullHidRsi),  "6H Hidden Bullish",   "6H Hidden Bullish Divergence")
+
+alertcondition(isActive(s8.bearRegPrice)  or isActive(s8.bearRegRsi),  "8H Regular Bearish",  "8H Regular Bearish Divergence")
+alertcondition(isActive(s8.bearHidPrice)  or isActive(s8.bearHidRsi),  "8H Hidden Bearish",   "8H Hidden Bearish Divergence")
+alertcondition(isActive(s8.bullRegPrice)  or isActive(s8.bullRegRsi),  "8H Regular Bullish",  "8H Regular Bullish Divergence")
+alertcondition(isActive(s8.bullHidPrice)  or isActive(s8.bullHidRsi),  "8H Hidden Bullish",   "8H Hidden Bullish Divergence")
+
+alertcondition(isActive(s12.bearRegPrice) or isActive(s12.bearRegRsi), "12H Regular Bearish", "12H Regular Bearish Divergence")
+alertcondition(isActive(s12.bearHidPrice) or isActive(s12.bearHidRsi), "12H Hidden Bearish",  "12H Hidden Bearish Divergence")
+alertcondition(isActive(s12.bullRegPrice) or isActive(s12.bullRegRsi), "12H Regular Bullish", "12H Regular Bullish Divergence")
+alertcondition(isActive(s12.bullHidPrice) or isActive(s12.bullHidRsi), "12H Hidden Bullish",  "12H Hidden Bullish Divergence")
+
+alertcondition(isActive(sD.bearRegPrice)  or isActive(sD.bearRegRsi),  "D Regular Bearish",   "Daily Regular Bearish Divergence")
+alertcondition(isActive(sD.bearHidPrice)  or isActive(sD.bearHidRsi),  "D Hidden Bearish",    "Daily Hidden Bearish Divergence")
+alertcondition(isActive(sD.bullRegPrice)  or isActive(sD.bullRegRsi),  "D Regular Bullish",   "Daily Regular Bullish Divergence")
+alertcondition(isActive(sD.bullHidPrice)  or isActive(sD.bullHidRsi),  "D Hidden Bullish",    "Daily Hidden Bullish Divergence")
+
+alertcondition(isActive(sW.bearRegPrice)  or isActive(sW.bearRegRsi),  "W Regular Bearish",   "Weekly Regular Bearish Divergence")
+alertcondition(isActive(sW.bearHidPrice)  or isActive(sW.bearHidRsi),  "W Hidden Bearish",    "Weekly Hidden Bearish Divergence")
+alertcondition(isActive(sW.bullRegPrice)  or isActive(sW.bullRegRsi),  "W Regular Bullish",   "Weekly Regular Bullish Divergence")
+alertcondition(isActive(sW.bullHidPrice)  or isActive(sW.bullHidRsi),  "W Hidden Bullish",    "Weekly Hidden Bullish Divergence")
